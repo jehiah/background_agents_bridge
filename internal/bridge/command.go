@@ -37,18 +37,12 @@ func (b *AgentBridge) startPrompt(cmd *command) {
 	messageID := cmd.msgID()
 
 	promptCtx, cancel := context.WithCancel(b.rootCtx)
-	b.setPromptCancel(cancel)
+	gen := b.setPromptCancel(cancel)
 
 	go func() {
 		defer cancel()
 		err := b.handlePrompt(promptCtx, cmd)
-
-		// Clear the stored cancel only if it is still ours.
-		b.promptMu.Lock()
-		if b.cancelPromptF != nil {
-			b.cancelPromptF = nil
-		}
-		b.promptMu.Unlock()
+		b.clearPromptCancel(gen)
 
 		if err != nil {
 			// handlePrompt already emits execution_complete on the paths it

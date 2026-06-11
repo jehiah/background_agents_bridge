@@ -59,9 +59,10 @@ type AgentBridge struct {
 	opencodeSessionID         string
 	lastForwardedSessionTitle string
 
-	// promptMu guards the in-flight prompt's cancel func.
+	// promptMu guards the in-flight prompt's cancel func and generation.
 	promptMu      sync.Mutex
 	cancelPromptF context.CancelFunc
+	promptGen     int
 
 	gitSyncOnce  sync.Once
 	gitSyncDoneC chan struct{}
@@ -205,11 +206,23 @@ func (b *AgentBridge) setOpencodeSessionID(id string) {
 	b.mu.Unlock()
 }
 
-// setPromptCancel stores the cancel func for the in-flight prompt.
-func (b *AgentBridge) setPromptCancel(cancel context.CancelFunc) {
+// setPromptCancel stores the cancel func for the in-flight prompt and returns a
+// generation token used to clear it without clobbering a newer prompt.
+func (b *AgentBridge) setPromptCancel(cancel context.CancelFunc) int {
 	b.promptMu.Lock()
+	defer b.promptMu.Unlock()
+	b.promptGen++
 	b.cancelPromptF = cancel
-	b.promptMu.Unlock()
+	return b.promptGen
+}
+
+// clearPromptCancel clears the stored cancel func only if gen is still current.
+func (b *AgentBridge) clearPromptCancel(gen int) {
+	b.promptMu.Lock()
+	defer b.promptMu.Unlock()
+	if b.promptGen == gen {
+		b.cancelPromptF = nil
+	}
 }
 
 // cancelPrompt cancels the in-flight prompt, if any.
