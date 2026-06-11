@@ -102,7 +102,7 @@ func (b *AgentBridge) streamOpencodeResponse(
 		}
 		return fmt.Errorf("SSE read error: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("SSE connection failed: %d", resp.StatusCode)
 	}
@@ -199,7 +199,7 @@ func (b *AgentBridge) postPrompt(ctx context.Context, ocSessionID string, body m
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		b.log.Error("bridge.prompt_request_error", "status_code", resp.StatusCode, "error_body", string(errBody))
@@ -449,7 +449,7 @@ func (b *AgentBridge) fetchFinalMessageState(ctx context.Context, s *streamState
 		parentMatches := gstr(info, "parentID") == s.opencodeMessageID
 		inTracked := s.allowedAssistantMsgIDs[msgID]
 		isCompactionSummary := info["summary"] == true
-		if !(parentMatches || inTracked || (s.compactionOccurred && !isCompactionSummary)) {
+		if !parentMatches && !inTracked && (!s.compactionOccurred || isCompactionSummary) {
 			continue
 		}
 		parts, _ := msg["parts"].([]any)

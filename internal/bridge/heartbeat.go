@@ -26,7 +26,7 @@ func (b *AgentBridge) heartbeatLoop(ctx context.Context) {
 			cancel()
 			if err != nil {
 				b.log.Warn("bridge.heartbeat_ping_failed", "exc", err)
-				conn.CloseNow()
+				_ = conn.CloseNow()
 				return
 			}
 			b.sendEvent(heartbeatEvent("ready"))

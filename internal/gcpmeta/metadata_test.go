@@ -22,7 +22,7 @@ func TestInstanceAttribute(t *testing.T) {
 		w.Header().Set(flavorHeader, flavorValue)
 		switch r.URL.Path {
 		case "/computeMetadata/v1/instance/attributes/sandbox-id":
-			w.Write([]byte("sb-123\n"))
+			_, _ = w.Write([]byte("sb-123\n"))
 		case "/computeMetadata/v1/instance/attributes/missing":
 			w.WriteHeader(http.StatusNotFound)
 		default:
@@ -64,7 +64,7 @@ func TestRejectsNonMetadataResponse(t *testing.T) {
 	// A server that omits the Metadata-Flavor response header (e.g. a captive
 	// portal) must be rejected.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not really metadata"))
+		_, _ = w.Write([]byte("not really metadata"))
 	}))
 	defer srv.Close()
 	c := newTestClient(t, srv)

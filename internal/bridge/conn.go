@@ -33,7 +33,7 @@ func (b *AgentBridge) connectAndRun(ctx context.Context) error {
 
 	b.setConn(conn)
 	defer b.clearConn()
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 
 	b.log.Info("bridge.connect", "outcome", "success")
 

@@ -62,7 +62,7 @@ func (c *Client) get(ctx context.Context, suffix string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Guard against captive portals / proxies impersonating the metadata server.
 	if resp.Header.Get(flavorHeader) != flavorValue {

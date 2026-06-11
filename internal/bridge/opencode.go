@@ -54,7 +54,7 @@ func (b *AgentBridge) createOpencodeSession(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("create session: HTTP %d: %s", resp.StatusCode, body)
@@ -78,7 +78,7 @@ func (b *AgentBridge) opencodeSessionExists(ctx context.Context, id string) bool
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -102,7 +102,7 @@ func (b *AgentBridge) requestOpencodeStop(ctx context.Context, reason string) bo
 		b.log.Warn("bridge.stop_request_error", "exc", err, "reason", reason)
 		return false
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	b.log.Info("bridge.stop_requested", "reason", reason)
 	return true
 }
@@ -118,7 +118,7 @@ func (b *AgentBridge) listMessages(ctx context.Context) ([]map[string]any, error
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("list messages: HTTP %d", resp.StatusCode)
 	}
