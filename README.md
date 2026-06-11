@@ -40,11 +40,11 @@ The bridge handles:
 go build ./cmd/bridge
 
 ./bridge \
-  --sandbox-id   "$SANDBOX_ID" \
-  --session-id   "$SESSION_ID" \
-  --control-plane "https://control-plane.example" \
-  --token        "$AUTH_TOKEN" \
-  --opencode-port 4096
+  --sandbox-id          "$SANDBOX_ID" \
+  --session-id          "$SESSION_ID" \
+  --control-plane       "https://control-plane.example" \
+  --control-plane-token "$AUTH_TOKEN" \
+  --opencode-port       4096
 ```
 
 Environment:
@@ -52,8 +52,38 @@ Environment:
 - `BRIDGE_SSE_INACTIVITY_TIMEOUT` — seconds of SSE silence before a prompt is
   aborted (default 120, clamped to [5, 3600]).
 - `BRIDGE_LOG_LEVEL` — `debug` | `info` | `warn` | `error` (default `info`).
+- `GCE_METADATA_HOST` — override the metadata host (see below).
 
 Logs are structured JSON (`log/slog`).
+
+## Configuration via GCE metadata
+
+Any flag left empty falls back to a [Google Compute Engine instance
+attribute](https://cloud.google.com/compute/docs/metadata/overview) of the same
+name. The bridge queries the metadata server directly
+(`http://metadata.google.internal/computeMetadata/v1/instance/attributes/<key>`
+with the `Metadata-Flavor: Google` header) — no cloud SDK dependency.
+
+| Flag                    | Metadata attribute    | Notes                         |
+| ----------------------- | --------------------- | ----------------------------- |
+| `--sandbox-id`          | `sandbox-id`          |                               |
+| `--session-id`          | `session-id`          |                               |
+| `--control-plane`       | `control-plane`       |                               |
+| `--control-plane-token` | `control-plane-token` |                               |
+| `--opencode-port`       | `opencode-port`       | falls back to `4096` if unset |
+
+Metadata is queried only when a flag is missing. A flag passed on the command
+line always wins, an absent attribute is treated as unset, and the probe fails
+fast (and is skipped) when not running on GCE. Set `GCE_METADATA_HOST` (host or
+`host:port`, no scheme) to point at a different metadata endpoint, e.g. for
+local testing.
+
+For example, to provision an instance:
+
+```sh
+gcloud compute instances create bridge-vm \
+  --metadata sandbox-id=sb-123,session-id=ses-abc,control-plane=https://cp.example,control-plane-token=...
+```
 
 ## Layout
 

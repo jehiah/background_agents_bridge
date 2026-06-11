@@ -10,26 +10,39 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/jehiah/background_agents_bridge/internal/bridge"
+	"github.com/jehiah/background_agents_bridge/internal/gcpmeta"
 )
+
+// defaultOpencodePort is used when neither the flag nor metadata supply a port.
+const defaultOpencodePort = 4096
 
 func main() {
 	sandboxID := flag.String("sandbox-id", "", "Sandbox ID")
 	sessionID := flag.String("session-id", "", "Session ID for WebSocket connection")
 	controlPlane := flag.String("control-plane", "", "Control plane URL")
-	token := flag.String("token", "", "Auth token")
-	opencodePort := flag.Int("opencode-port", 4096, "OpenCode port")
+	token := flag.String("control-plane-token", "", "Bearer auth token for the control-plane WebSocket")
+	opencodePort := flag.Int("opencode-port", 0, "OpenCode port (default 4096)")
 	flag.Parse()
+
+	// Empty flags fall back to GCE instance attributes of the same name.
+	resolveFromMetadata(map[string]*string{
+		"sandbox-id":          sandboxID,
+		"session-id":          sessionID,
+		"control-plane":       controlPlane,
+		"control-plane-token": token,
+	}, opencodePort)
 
 	var missing []string
 	for name, v := range map[string]string{
-		"--sandbox-id":    *sandboxID,
-		"--session-id":    *sessionID,
-		"--control-plane": *controlPlane,
-		"--token":         *token,
+		"--sandbox-id":          *sandboxID,
+		"--session-id":          *sessionID,
+		"--control-plane":       *controlPlane,
+		"--control-plane-token": *token,
 	} {
 		if v == "" {
 			missing = append(missing, name)
@@ -57,6 +70,52 @@ func main() {
 	if err := b.Run(ctx); err != nil {
 		logger.Error("bridge.exit", "exc", err)
 		os.Exit(1)
+	}
+}
+
+// resolveFromMetadata fills any empty string flag and a zero port from GCE
+// instance attributes keyed by flag name. It probes the metadata server only
+// when something is missing, stops on the first transport error (returning
+// promptly when not running on GCE), and treats absent attributes as unset.
+func resolveFromMetadata(stringFlags map[string]*string, opencodePort *int) {
+	anyEmpty := *opencodePort == 0
+	for _, p := range stringFlags {
+		if *p == "" {
+			anyEmpty = true
+		}
+	}
+
+	if anyEmpty {
+		mc := gcpmeta.NewClient()
+		ctx := context.Background()
+
+		reachable := true
+		for key, p := range stringFlags {
+			if *p != "" {
+				continue
+			}
+			v, err := mc.InstanceAttribute(ctx, key)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "metadata lookup %q failed: %v\n", key, err)
+				reachable = false
+				break // likely not on GCE; stop probing
+			}
+			if v != "" {
+				*p = v
+			}
+		}
+
+		if reachable && *opencodePort == 0 {
+			if v, err := mc.InstanceAttribute(ctx, "opencode-port"); err == nil && v != "" {
+				if n, err := strconv.Atoi(v); err == nil {
+					*opencodePort = n
+				}
+			}
+		}
+	}
+
+	if *opencodePort == 0 {
+		*opencodePort = defaultOpencodePort
 	}
 }
 
