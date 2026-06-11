@@ -29,6 +29,10 @@ const (
 	maxEventBufferSize   = 1000
 
 	wsReadLimit = 32 * 1024 * 1024 // 32 MiB; token/tool-output frames exceed the 32 KiB default.
+
+	// sseMaxEventSize bounds a single OpenCode SSE event. go-sse defaults to
+	// 64 KiB, which token/tool-output events routinely exceed.
+	sseMaxEventSize = 32 * 1024 * 1024
 )
 
 // criticalEventTypes are re-sent until acknowledged by the control plane.

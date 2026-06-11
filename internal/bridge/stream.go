@@ -10,7 +10,16 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/tmaxmax/go-sse"
 )
+
+// sseEvent is the JSON payload OpenCode sends in each SSE "data:" field. Its
+// shape varies by Type; the dispatcher navigates Properties with gstr/gmap.
+type sseEvent struct {
+	Type       string         `json:"type"`
+	Properties map[string]any `json:"properties"`
+}
 
 // pendingPart is a message part received before its assistant message was
 // authorized; it is replayed once the message id is allowed.
@@ -106,13 +115,30 @@ func (b *AgentBridge) streamOpencodeResponse(
 	startWall := time.Now()
 	promptStart := time.Now()
 
-	handle := func(ev sseEvent) (bool, error) {
-		stop, herr := b.dispatchSSE(ctx, s, ev, emit)
+	var finishErr, readErr error
+	for ev, err := range sse.Read(resp.Body, &sse.ReadConfig{MaxEventSize: sseMaxEventSize}) {
+		if err != nil {
+			readErr = err
+			break
+		}
+		// Any event (including OpenCode's server.heartbeat) counts as activity.
+		timer.Reset(b.sseInactivityTimeout)
+		if ev.Data == "" {
+			continue
+		}
+		var payload sseEvent
+		if json.Unmarshal([]byte(ev.Data), &payload) != nil {
+			b.log.Debug("bridge.sse_parse_error")
+			continue
+		}
+
+		stop, herr := b.dispatchSSE(ctx, s, payload, emit)
 		if herr != nil {
-			return true, herr
+			finishErr = herr
+			break
 		}
 		if stop {
-			return true, nil
+			break
 		}
 		if time.Since(promptStart) > promptMaxDuration {
 			b.log.Error("bridge.prompt_max_duration_timeout",
@@ -122,19 +148,22 @@ func (b *AgentBridge) streamOpencodeResponse(
 			)
 			b.requestOpencodeStop(ctx, "prompt_max_duration_timeout")
 			b.fetchFinalMessageState(ctx, s, emit)
-			return true, fmt.Errorf("Prompt exceeded max duration of %.0fs.", promptMaxDuration.Seconds())
+			finishErr = fmt.Errorf("prompt exceeded max duration of %.0fs", promptMaxDuration.Seconds())
+			break
 		}
-		return false, nil
 	}
 
-	err = parseSSE(resp.Body, func() { timer.Reset(b.sseInactivityTimeout) }, handle)
 	switch {
+	case finishErr != nil:
+		return finishErr
 	case inactivity.Load():
 		return b.onStreamInactivity(ctx, s, emit)
-	case err != nil && ctx.Err() != nil:
+	case readErr != nil && ctx.Err() != nil:
 		return ctx.Err()
+	case readErr != nil:
+		return fmt.Errorf("SSE read error: %w", readErr)
 	default:
-		return err
+		return nil
 	}
 }
 
