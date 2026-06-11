@@ -116,15 +116,15 @@ func pushErrorEvent(errMsg, branch string, withBranch bool) event {
 // command is a message received from the control plane. Fields cover every
 // command variant; unused ones stay zero-valued.
 type command struct {
-	Type            string          `json:"type"`
-	MessageID       string          `json:"messageId"`
-	MessageIDSnake  string          `json:"message_id"`
-	Content         string          `json:"content"`
-	Model           string          `json:"model"`
-	ReasoningEffort string          `json:"reasoningEffort"`
-	Author          commandAuthor   `json:"author"`
-	PushSpec        *pushSpec       `json:"pushSpec"`
-	AckID           string          `json:"ackId"`
+	Type            string        `json:"type"`
+	MessageID       string        `json:"messageId"`
+	MessageIDSnake  string        `json:"message_id"`
+	Content         string        `json:"content"`
+	Model           string        `json:"model"`
+	ReasoningEffort string        `json:"reasoningEffort"`
+	Author          commandAuthor `json:"author"`
+	PushSpec        *pushSpec     `json:"pushSpec"`
+	AckID           string        `json:"ackId"`
 }
 
 type commandAuthor struct {

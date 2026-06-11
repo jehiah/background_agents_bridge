@@ -11,19 +11,19 @@ import (
 // Tunables ported from the Python bridge. Durations that were float seconds
 // upstream are expressed as time.Duration here.
 const (
-	heartbeatInterval     = 30 * time.Second
-	reconnectBackoffBase  = 2.0
-	reconnectMaxDelay     = 60 * time.Second
-	sseInactivityDefault  = 120 * time.Second
-	sseInactivityMin      = 5 * time.Second
-	sseInactivityMax      = 3600 * time.Second
-	httpConnectTimeout    = 30 * time.Second
-	httpDefaultTimeout    = 30 * time.Second
+	heartbeatInterval      = 30 * time.Second
+	reconnectBackoffBase   = 2.0
+	reconnectMaxDelay      = 60 * time.Second
+	sseInactivityDefault   = 120 * time.Second
+	sseInactivityMin       = 5 * time.Second
+	sseInactivityMax       = 3600 * time.Second
+	httpConnectTimeout     = 30 * time.Second
+	httpDefaultTimeout     = 30 * time.Second
 	opencodeRequestTimeout = 30 * time.Second
-	gitPushTimeout        = 300 * time.Second
-	gitPushTerminateGrace = 5 * time.Second
-	promptMaxDuration     = 5400 * time.Second
-	gitConfigTimeout      = 10 * time.Second
+	gitPushTimeout         = 300 * time.Second
+	gitPushTerminateGrace  = 5 * time.Second
+	promptMaxDuration      = 5400 * time.Second
+	gitConfigTimeout       = 10 * time.Second
 
 	maxPendingPartEvents = 2000
 	maxEventBufferSize   = 1000
