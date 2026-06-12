@@ -60,7 +60,7 @@ func Resolve(f Flags) Resolved {
 		{&r.SandboxID, f.SandboxID, "SANDBOX_ID", "sandbox_id"},
 		{&r.SessionID, f.SessionID, "SESSION_ID", "session_id"},
 		{&r.ControlPlaneURL, f.ControlPlaneURL, "CONTROL_PLANE_URL", "control_plane_url"},
-		{&r.AuthToken, f.AuthToken, "SANDBOX_AUTH_TOKEN", "control_plane_token"},
+		{&r.AuthToken, f.AuthToken, "SANDBOX_AUTH_TOKEN", "sandbox_auth_token"},
 	}
 
 	// Env fallback for any empty string field.
@@ -155,10 +155,10 @@ func sessionIDFromConfig(raw string) string {
 // flags so error messages stay familiar.
 func (r Resolved) Missing(required ...string) []string {
 	have := map[string]string{
-		"sandbox-id":          r.SandboxID,
-		"session-id":          r.SessionID,
-		"control-plane":       r.ControlPlaneURL,
-		"control-plane-token": r.AuthToken,
+		"sandbox_id":         r.SandboxID,
+		"session_id":         r.SessionID,
+		"control_plane_url":  r.ControlPlaneURL,
+		"sandbox_auth_token": r.AuthToken,
 	}
 	var missing []string
 	for _, name := range required {

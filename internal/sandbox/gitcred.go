@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/jehiah/background_agents_bridge/internal/config"
@@ -26,7 +27,16 @@ func GitCredential(op string, stdin io.Reader, stdout io.Writer) error {
 		return nil
 	}
 
-	attrs := parseCredentialAttrs(stdin)
+	// When invoked by git, stdin is a pipe carrying key=value attrs terminated
+	// by a blank line or EOF. When a human runs the command interactively from
+	// a terminal there are no attrs to read; skip the scan so we don't block
+	// waiting for the user to type a blank line.
+	var attrs map[string]string
+	if f, ok := stdin.(*os.File); ok && isTerminal(f) {
+		attrs = map[string]string{}
+	} else {
+		attrs = parseCredentialAttrs(stdin)
+	}
 	host := attrs["host"]
 	if host == "" {
 		host = "github.com"
@@ -73,4 +83,17 @@ func parseCredentialAttrs(r io.Reader) map[string]string {
 	}
 	_ = sc.Err() // git's request is small and well-formed; a read error just yields fewer attrs
 	return attrs
+}
+
+// isTerminal reports whether f refers to a character device (a TTY). It avoids
+// pulling in golang.org/x/term for what is a single Stat call.
+func isTerminal(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return st.Mode()&os.ModeCharDevice != 0
 }

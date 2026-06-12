@@ -9,8 +9,7 @@
 //	                                    stdin, result on stdout)
 //	bridge install                      self-install the credential helper + tools
 //
-// For backwards compatibility, invoking bridge with flags and no subcommand is
-// treated as `connect`.
+// A subcommand is always required.
 //
 // The connect mode is a Go port of the upstream Python bridge.
 package main
@@ -42,14 +41,14 @@ func newFlagSet(name string) *flag.FlagSet {
 }
 
 func main() {
-	// Dispatch on the first argument when it names a subcommand; otherwise fall
-	// back to connect so the existing `bridge --flag ...` invocation still works.
+	// Dispatch on the first argument, which must name a subcommand.
 	args := os.Args[1:]
-	cmd := ""
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		cmd = args[0]
-		args = args[1:]
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: bridge <connect|git-credential|tool|install> ...")
+		os.Exit(2)
 	}
+	cmd := args[0]
+	args = args[1:]
 
 	switch cmd {
 	case "git-credential":
@@ -58,7 +57,7 @@ func main() {
 		runTool(args)
 	case "install":
 		runInstall()
-	case "", "connect":
+	case "connect":
 		runConnect(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)

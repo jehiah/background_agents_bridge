@@ -98,7 +98,7 @@ with the `Metadata-Flavor: Google` header) — no cloud SDK dependency.
 | `--sandbox-id`          | `sandbox_id`          |                               |
 | `--session-id`          | `session_id`          |                               |
 | `--control-plane`       | `control_plane_url`   |                               |
-| `--control-plane-token` | `control_plane_token` |                               |
+| `--sandbox-auth-token`  | `sandbox_auth_token`  |                               |
 | `--opencode-port`       | `opencode_port`       | falls back to `4096` if unset |
 
 Metadata is queried only when a flag is missing. A flag passed on the command
@@ -111,7 +111,7 @@ For example, to provision an instance:
 
 ```sh
 gcloud compute instances create bridge-vm \
-  --metadata sandbox_id=sb-123,session_id=ses-abc,control_plane_url=https://cp.example,control_plane_token=...
+  --metadata sandbox_id=sb-123,session_id=ses-abc,control_plane_url=https://cp.example,sandbox_auth_token=...
 ```
 
 ## Layout
