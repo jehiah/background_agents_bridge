@@ -1,6 +1,18 @@
-// Command bridge is the sandbox-side agent bridge connecting a local OpenCode
-// instance to the background-agents control plane. It is a Go port of the
-// upstream Python bridge.
+// Command bridge is the sandbox side of background-agents: everything in the
+// sandbox that talks to the control plane. It runs in one of several modes:
+//
+//	bridge connect [flags]              connect a local OpenCode to the control
+//	                                    plane over a WebSocket (the long-running
+//	                                    service) and self-install the helpers below
+//	bridge git-credential <get|...>     git credential helper (brokers SCM tokens)
+//	bridge tool <name>                  execute one OpenCode tool (args JSON on
+//	                                    stdin, result on stdout)
+//	bridge install                      self-install the credential helper + tools
+//
+// For backwards compatibility, invoking bridge with flags and no subcommand is
+// treated as `connect`.
+//
+// The connect mode is a Go port of the upstream Python bridge.
 package main
 
 import (
@@ -10,47 +22,71 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/jehiah/background_agents_bridge/internal/bridge"
-	"github.com/jehiah/background_agents_bridge/internal/gcpmeta"
+	"github.com/jehiah/background_agents_bridge/internal/config"
+	"github.com/jehiah/background_agents_bridge/internal/sandbox"
 )
 
-// defaultOpencodePort is used when neither the flag nor metadata supply a port.
-const defaultOpencodePort = 4096
+// newFlagSet builds a flag set that exits on error and prints usage under the
+// given subcommand name.
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: bridge %s [flags]\n", name)
+		fs.PrintDefaults()
+	}
+	return fs
+}
 
 func main() {
-	sandboxID := flag.String("sandbox-id", "", "Sandbox ID")
-	sessionID := flag.String("session-id", "", "Session ID for WebSocket connection")
-	controlPlane := flag.String("control-plane", "", "Control plane URL")
-	token := flag.String("control-plane-token", "", "Bearer auth token for the control-plane WebSocket")
-	opencodePort := flag.Int("opencode-port", 0, "OpenCode port (default 4096)")
-	flag.Parse()
-
-	// Empty flags fall back to GCE instance attributes of the same name.
-	resolveFromMetadata(map[string]*string{
-		"sandbox-id":          sandboxID,
-		"session-id":          sessionID,
-		"control-plane":       controlPlane,
-		"control-plane-token": token,
-	}, opencodePort)
-
-	var missing []string
-	for name, v := range map[string]string{
-		"--sandbox-id":          *sandboxID,
-		"--session-id":          *sessionID,
-		"--control-plane":       *controlPlane,
-		"--control-plane-token": *token,
-	} {
-		if v == "" {
-			missing = append(missing, name)
-		}
+	// Dispatch on the first argument when it names a subcommand; otherwise fall
+	// back to connect so the existing `bridge --flag ...` invocation still works.
+	args := os.Args[1:]
+	cmd := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		cmd = args[0]
+		args = args[1:]
 	}
-	if len(missing) > 0 {
+
+	switch cmd {
+	case "git-credential":
+		runGitCredential(args)
+	case "tool":
+		runTool(args)
+	case "install":
+		runInstall()
+	case "", "connect":
+		runConnect(args)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
+		fmt.Fprintln(os.Stderr, "usage: bridge <connect|git-credential|tool|install> ...")
+		os.Exit(2)
+	}
+}
+
+// runConnect runs the long-lived control-plane bridge, after self-installing the
+// git credential helper and OpenCode tools.
+func runConnect(argv []string) {
+	fs := newFlagSet("connect")
+	var f config.Flags
+	fs.StringVar(&f.SandboxID, "sandbox-id", "", "Sandbox ID")
+	fs.StringVar(&f.SessionID, "session-id", "", "Session ID for WebSocket connection")
+	fs.StringVar(&f.ControlPlaneURL, "control-plane", "", "Control plane URL")
+	fs.StringVar(&f.AuthToken, "control-plane-token", "", "Bearer auth token for the control-plane WebSocket")
+	fs.IntVar(&f.OpencodePort, "opencode-port", 0, "OpenCode port (default 4096)")
+	_ = fs.Parse(argv)
+
+	cfg := config.Resolve(f)
+
+	if missing := cfg.Missing("sandbox-id", "session-id", "control-plane", "control-plane-token"); len(missing) > 0 {
+		for i, m := range missing {
+			missing[i] = "--" + m
+		}
 		fmt.Fprintf(os.Stderr, "missing required flags: %s\n", strings.Join(missing, ", "))
-		flag.Usage()
+		fs.Usage()
 		os.Exit(2)
 	}
 
@@ -59,64 +95,55 @@ func main() {
 	})).With(
 		"service", "sandbox",
 		"component", "bridge",
-		"sandbox_id", *sandboxID,
-		"session_id", *sessionID,
+		"sandbox_id", cfg.SandboxID,
+		"session_id", cfg.SessionID,
 	)
+
+	// Self-install the credential helper + tools (best effort; logged inside).
+	sandbox.Install(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	b := bridge.New(*sandboxID, *sessionID, *controlPlane, *token, *opencodePort, logger)
+	b := bridge.New(cfg.SandboxID, cfg.SessionID, cfg.ControlPlaneURL, cfg.AuthToken, cfg.OpencodePort, logger)
 	if err := b.Run(ctx); err != nil {
 		logger.Error("bridge.exit", "exc", err)
 		os.Exit(1)
 	}
 }
 
-// resolveFromMetadata fills any empty string flag and a zero port from GCE
-// instance attributes keyed by flag name. It probes the metadata server only
-// when something is missing, stops on the first transport error (returning
-// promptly when not running on GCE), and treats absent attributes as unset.
-func resolveFromMetadata(stringFlags map[string]*string, opencodePort *int) {
-	anyEmpty := *opencodePort == 0
-	for _, p := range stringFlags {
-		if *p == "" {
-			anyEmpty = true
-		}
+// runGitCredential serves the git credential-helper protocol. git passes the
+// operation (get/store/erase) as the final argument.
+func runGitCredential(argv []string) {
+	op := ""
+	if len(argv) > 0 {
+		op = argv[0]
 	}
-
-	if anyEmpty {
-		mc := gcpmeta.NewClient()
-		ctx := context.Background()
-
-		reachable := true
-		for key, p := range stringFlags {
-			if *p != "" {
-				continue
-			}
-			v, err := mc.InstanceAttribute(ctx, key)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "metadata lookup %q failed: %v\n", key, err)
-				reachable = false
-				break // likely not on GCE; stop probing
-			}
-			if v != "" {
-				*p = v
-			}
-		}
-
-		if reachable && *opencodePort == 0 {
-			if v, err := mc.InstanceAttribute(ctx, "opencode-port"); err == nil && v != "" {
-				if n, err := strconv.Atoi(v); err == nil {
-					*opencodePort = n
-				}
-			}
-		}
+	if err := sandbox.GitCredential(op, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "git-credential: %v\n", err)
+		os.Exit(1)
 	}
+}
 
-	if *opencodePort == 0 {
-		*opencodePort = defaultOpencodePort
+// runTool executes a single OpenCode tool call.
+func runTool(argv []string) {
+	if len(argv) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: bridge tool <name>")
+		os.Exit(2)
 	}
+	if err := sandbox.RunTool(argv[0], os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "tool: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runInstall performs the self-install without connecting (useful for testing /
+// provisioning).
+func runInstall() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()})).With(
+		"service", "sandbox", "component", "bridge",
+	)
+	sandbox.Install(logger)
 }
 
 // logLevel reads BRIDGE_LOG_LEVEL (debug|info|warn|error), defaulting to info.

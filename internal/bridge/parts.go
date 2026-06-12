@@ -47,7 +47,7 @@ func buildPromptRequestBody(content, model, opencodeMessageID, reasoningEffort s
 
 	if reasoningEffort != "" {
 		switch providerID {
-		case "anthropic":
+		case "anthropic", "google-vertex", "google-vertex-anthropic":
 			if anthropicAdaptiveThinkingModels[modelID] {
 				opts := map[string]any{"thinking": map[string]any{"type": "adaptive"}}
 				if anthropicAdaptiveEfforts[reasoningEffort] {

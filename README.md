@@ -21,31 +21,59 @@ This repository is a Go port of that component.
 └────────────┘    └────────────┘    └────────────┘            (WebSocket)
 ```
 
-## Responsibilities
+## Scope
 
-The bridge handles:
+The bridge is **everything in the sandbox that talks to the control plane**. It
+runs in one of several modes, selected by the first argument:
+
+| Mode | Purpose |
+| ---- | ------- |
+| `bridge connect` | The long-running service: connect OpenCode to the control plane over a WebSocket. On startup it **self-installs** the two modes below. |
+| `bridge git-credential <get\|store\|erase>` | A [git credential helper](https://git-scm.com/docs/gitcredentials#_custom_helpers): brokers a fresh SCM token from the control plane on each git op (no caching). |
+| `bridge tool <name>` | Execute one OpenCode tool — reads JSON args on stdin, proxies to the control plane, writes the agent-facing result on stdout. |
+| `bridge install` | Run the self-install steps only (credential helper + tool files). |
+
+Invoking `bridge` with flags and no subcommand is treated as `connect` for
+backwards compatibility.
+
+### `connect`
 
 - **WebSocket connection** to the control plane Durable Object, including
-  reconnection.
-- **Heartbeat loop** for connection health.
-- **Event forwarding** from OpenCode to the control plane (tool calls, token
-  streams, status updates).
-- **Command handling** from the control plane (prompt, stop, snapshot).
-- **Git identity configuration** per prompt author, so commits are attributed to
-  the user who issued the prompt.
+  reconnection, **heartbeat**, **event forwarding** (tool calls, token streams,
+  status updates), and **command handling** (prompt, stop, snapshot).
+- **Git identity configuration** per prompt author.
+- **Self-install** on startup:
+  - registers `bridge git-credential` as git's `credential.helper`
+    (`git config --system credential.helper "!<exe> git-credential"`), replacing
+    the standalone shell helper;
+  - writes an OpenCode tool definition for each tool into
+    `~/.config/opencode/tools/` — a thin `.js` shim that shells back into
+    `bridge tool <name>`.
+
+### Tools
+
+`bridge tool <name>` and the generated shims cover: `create-pull-request`,
+`spawn-task`, `get-task-status`, `cancel-task`, `slack-notify`, and
+`image-upload`. The Go binary is the single source of truth for both the tool
+definitions (name, description, args schema) and their execution.
 
 ## Build & run
 
 ```sh
 go build ./cmd/bridge
 
-./bridge \
+./bridge connect \
   --sandbox-id          "$SANDBOX_ID" \
   --session-id          "$SESSION_ID" \
   --control-plane       "https://control-plane.example" \
   --control-plane-token "$AUTH_TOKEN" \
   --opencode-port       4096
 ```
+
+The short-lived modes (`git-credential`, `tool`) are spawned by git and OpenCode
+rather than run by hand; they resolve their configuration from the inherited
+environment (`CONTROL_PLANE_URL`, `SANDBOX_AUTH_TOKEN`, `SESSION_ID` /
+`SESSION_CONFIG`) with a GCE metadata fallback.
 
 Environment:
 
@@ -87,22 +115,29 @@ gcloud compute instances create bridge-vm \
 
 ## Layout
 
-```
-cmd/bridge        entrypoint (flags, logging, signal handling)
-internal/bridge   the bridge:
-  bridge.go       struct, reconnect loop, shared state
-  conn.go         WebSocket dial + read loop
-  send.go         event send, buffering, pending-ACK tracking
-  heartbeat.go    heartbeat + WebSocket ping
-  command.go      inbound command dispatch
-  prompt.go       prompt lifecycle
-  stream.go       OpenCode SSE correlation state machine
-  parts.go        part→event transforms, prompt request body
-  opencode.go     OpenCode HTTP client
-  session.go      session-id persistence
-  git.go          git identity + push
-  identifier.go   OpenCode-compatible ascending IDs
-```
+- `cmd/bridge` — subcommand dispatch (`connect` | `git-credential` | `tool` | `install`).
+- `internal/config` — flag→env→GCE-metadata resolution shared by every mode.
+- `internal/gcpmeta` — minimal GCE metadata client.
+- `internal/controlplane` — the typed control-plane client: one method per
+  endpoint, with named request/response structs and no exported HTTP transport
+  types. The interface is the control-plane endpoint allowlist:
+
+  ```go
+  SCMCredentials(ctx, host) (Credentials, error)
+  CreatePR(ctx, CreatePRRequest) (PRResult, error)
+  SpawnChild(ctx, SpawnChildRequest) (SpawnChildResult, error)
+  ListChildren(ctx) ([]ChildSummary, error)
+  GetChild(ctx, childID, ChildDetailOptions) (ChildDetail, error)
+  CancelChild(ctx, childID) (CancelResult, error)
+  SlackNotify(ctx, SlackNotifyRequest) (SlackNotifyResult, error)
+  UploadMedia(ctx, UploadMediaRequest) (MediaResult, error)
+  ```
+
+- `internal/sandbox` — sandbox-side glue: the credential helper, the
+  `bridge tool` dispatch and agent-facing formatting, and the self-install of the
+  credential helper and OpenCode tool files.
+- `internal/bridge` — the `connect`-mode WebSocket bridge (reconnect loop,
+  heartbeat, event forwarding, command handling, git identity + push).
 
 ## Design notes
 
