@@ -87,18 +87,19 @@ Logs are structured JSON (`log/slog`).
 ## Configuration via GCE metadata
 
 Any flag left empty falls back to a [Google Compute Engine instance
-attribute](https://cloud.google.com/compute/docs/metadata/overview) of the same
-name. The bridge queries the metadata server directly
+attribute](https://cloud.google.com/compute/docs/metadata/overview) (see the
+table below for the attribute name each flag maps to). The bridge queries the
+metadata server directly
 (`http://metadata.google.internal/computeMetadata/v1/instance/attributes/<key>`
 with the `Metadata-Flavor: Google` header) — no cloud SDK dependency.
 
 | Flag                    | Metadata attribute    | Notes                         |
 | ----------------------- | --------------------- | ----------------------------- |
-| `--sandbox-id`          | `sandbox-id`          |                               |
-| `--session-id`          | `session-id`          |                               |
-| `--control-plane`       | `control-plane`       |                               |
-| `--control-plane-token` | `control-plane-token` |                               |
-| `--opencode-port`       | `opencode-port`       | falls back to `4096` if unset |
+| `--sandbox-id`          | `sandbox_id`          |                               |
+| `--session-id`          | `session_id`          |                               |
+| `--control-plane`       | `control_plane_url`   |                               |
+| `--control-plane-token` | `control_plane_token` |                               |
+| `--opencode-port`       | `opencode_port`       | falls back to `4096` if unset |
 
 Metadata is queried only when a flag is missing. A flag passed on the command
 line always wins, an absent attribute is treated as unset, and the probe fails
@@ -110,7 +111,7 @@ For example, to provision an instance:
 
 ```sh
 gcloud compute instances create bridge-vm \
-  --metadata sandbox-id=sb-123,session-id=ses-abc,control-plane=https://cp.example,control-plane-token=...
+  --metadata sandbox_id=sb-123,session_id=ses-abc,control_plane_url=https://cp.example,control_plane_token=...
 ```
 
 ## Layout

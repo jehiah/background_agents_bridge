@@ -57,10 +57,10 @@ func Resolve(f Flags) Resolved {
 	r := Resolved(f)
 
 	fields := []field{
-		{&r.SandboxID, f.SandboxID, "SANDBOX_ID", "sandbox-id"},
-		{&r.SessionID, f.SessionID, "SESSION_ID", "session-id"},
-		{&r.ControlPlaneURL, f.ControlPlaneURL, "CONTROL_PLANE_URL", "control-plane"},
-		{&r.AuthToken, f.AuthToken, "SANDBOX_AUTH_TOKEN", "control-plane-token"},
+		{&r.SandboxID, f.SandboxID, "SANDBOX_ID", "sandbox_id"},
+		{&r.SessionID, f.SessionID, "SESSION_ID", "session_id"},
+		{&r.ControlPlaneURL, f.ControlPlaneURL, "CONTROL_PLANE_URL", "control_plane_url"},
+		{&r.AuthToken, f.AuthToken, "SANDBOX_AUTH_TOKEN", "control_plane_token"},
 	}
 
 	// Env fallback for any empty string field.
@@ -124,7 +124,7 @@ func resolveFromMetadata(fields []field, opencodePort *int) {
 	}
 
 	if reachable && *opencodePort == 0 {
-		if v, err := mc.InstanceAttribute(ctx, "opencode-port"); err == nil && v != "" {
+		if v, err := mc.InstanceAttribute(ctx, "opencode_port"); err == nil && v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				*opencodePort = n
 			}

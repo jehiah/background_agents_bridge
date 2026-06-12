@@ -84,11 +84,11 @@ func TestResolveDefaultPort(t *testing.T) {
 
 func TestResolveMetadataFallback(t *testing.T) {
 	attrs := map[string]string{
-		"sandbox-id":          "meta-sandbox",
-		"session-id":          "meta-session",
-		"control-plane":       "https://meta.example",
-		"control-plane-token": "meta-token",
-		"opencode-port":       "7000",
+		"sandbox_id":          "meta-sandbox",
+		"session_id":          "meta-session",
+		"control_plane_url":   "https://meta.example",
+		"control_plane_token": "meta-token",
+		"opencode_port":       "7000",
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Metadata-Flavor", "Google")
