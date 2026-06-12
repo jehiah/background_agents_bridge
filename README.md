@@ -66,7 +66,7 @@ go build ./cmd/bridge
   --sandbox-id          "$SANDBOX_ID" \
   --session-id          "$SESSION_ID" \
   --control-plane       "https://control-plane.example" \
-  --control-plane-token "$AUTH_TOKEN" \
+  --sandbox-auth-token "$AUTH_TOKEN" \
   --opencode-port       4096
 ```
 

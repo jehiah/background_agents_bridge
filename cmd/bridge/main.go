@@ -44,7 +44,7 @@ func main() {
 	// Dispatch on the first argument, which must name a subcommand.
 	args := os.Args[1:]
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: bridge <connect|git-credential|tool|install> ...")
+		fmt.Fprintln(os.Stderr, "usage: bridge <connect|git-credential|tool|install> [flags] ...")
 		os.Exit(2)
 	}
 	cmd := args[0]
@@ -61,7 +61,7 @@ func main() {
 		runConnect(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
-		fmt.Fprintln(os.Stderr, "usage: bridge <connect|git-credential|tool|install> ...")
+		fmt.Fprintln(os.Stderr, "usage: bridge <connect|git-credential|tool|install> [flags] ...")
 		os.Exit(2)
 	}
 }
@@ -73,14 +73,14 @@ func runConnect(argv []string) {
 	var f config.Flags
 	fs.StringVar(&f.SandboxID, "sandbox-id", "", "Sandbox ID")
 	fs.StringVar(&f.SessionID, "session-id", "", "Session ID for WebSocket connection")
-	fs.StringVar(&f.ControlPlaneURL, "control-plane", "", "Control plane URL")
-	fs.StringVar(&f.AuthToken, "control-plane-token", "", "Bearer auth token for the control-plane WebSocket")
+	fs.StringVar(&f.ControlPlaneURL, "control-plane-url", "", "Control plane URL")
+	fs.StringVar(&f.AuthToken, "sandbox-auth-token", "", "Bearer auth token for the control-plane WebSocket")
 	fs.IntVar(&f.OpencodePort, "opencode-port", 0, "OpenCode port (default 4096)")
 	_ = fs.Parse(argv)
 
 	cfg := config.Resolve(f)
 
-	if missing := cfg.Missing("sandbox-id", "session-id", "control-plane", "control-plane-token"); len(missing) > 0 {
+	if missing := cfg.Missing("sandbox_id", "session_id", "control_plane_url", "sandbox_auth_token"); len(missing) > 0 {
 		for i, m := range missing {
 			missing[i] = "--" + m
 		}

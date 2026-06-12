@@ -118,8 +118,8 @@ func TestResolveMetadataFallback(t *testing.T) {
 
 func TestMissing(t *testing.T) {
 	r := Resolved{SandboxID: "s", ControlPlaneURL: "u"}
-	got := r.Missing("sandbox-id", "session-id", "control-plane", "control-plane-token")
-	want := []string{"session-id", "control-plane-token"}
+	got := r.Missing("sandbox_id", "session_id", "control_plane_url", "sandbox_auth_token")
+	want := []string{"session_id", "sandbox_auth_token"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("Missing() = %v, want %v", got, want)
 	}
