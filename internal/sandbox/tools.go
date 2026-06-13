@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -83,11 +85,17 @@ func apiErr(err error) (*controlplane.APIError, bool) {
 // --- create-pull-request -----------------------------------------------------
 
 func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]any) string {
+	baseBranch := argStr(args, "baseBranch")
+	headBranch := currentGitBranch(ctx)
+	if msg := requireFeatureBranch(headBranch, baseBranch); msg != "" {
+		return msg
+	}
+
 	req := controlplane.CreatePRRequest{
 		Title:      orDefault(argStr(args, "title"), "Changes from OpenCode session"),
 		Body:       orDefault(argStr(args, "body"), "Automated PR created via create-pull-request tool"),
-		BaseBranch: argStr(args, "baseBranch"),
-		HeadBranch: currentGitBranch(ctx),
+		BaseBranch: baseBranch,
+		HeadBranch: headBranch,
 	}
 
 	result, err := c.CreatePR(ctx, req)
@@ -112,12 +120,47 @@ func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]an
 	return fmt.Sprintf("Pull request created successfully!\n\nPR #%d: %s\n\nThe PR is now ready for review.", result.PRNumber, result.PRURL)
 }
 
-// currentGitBranch resolves the current branch name in the working directory,
-// returning "" for a detached HEAD or any error (the server picks a default).
-func currentGitBranch(ctx context.Context) string {
+// requireFeatureBranch returns a non-empty, agent-facing error when head is not
+// a usable PR source branch. Creating a PR from a detached HEAD or from the base
+// branch makes the control plane discard the value and fall back to a generated
+// branch name ("<prefix>/<sessionId>") instead of the agent's branch — so we
+// stop early and tell the agent to create a dedicated feature branch.
+func requireFeatureBranch(head, baseBranch string) string {
+	const hint = "Create a dedicated feature branch first, e.g. `git checkout -b feature/short-description`, " +
+		"move your commits onto it, then call this tool again."
+	if head == "" {
+		return "Cannot create a pull request: the repository is in a detached HEAD state (no current branch). " + hint
+	}
+	h := strings.ToLower(head)
+	base := strings.ToLower(strings.TrimSpace(baseBranch))
+	if h == "main" || h == "master" || (base != "" && h == base) {
+		return fmt.Sprintf("Cannot create a pull request from %q: pull requests must come from a feature branch, not the base branch. ", head) + hint
+	}
+	return ""
+}
+
+// currentGitBranch resolves the current branch name of the checked-out
+// repository, returning "" for a detached HEAD or any error (the server then
+// falls back to a generated branch name like "<prefix>/<sessionId>").
+//
+// The branch reported here is the only reliable source the control plane has for
+// the PR head branch, so it must be resolved deterministically. `bridge tool` is
+// a short-lived child process spawned by the OpenCode tool shim; trusting its
+// inherited working directory is fragile and was the cause of branches
+// intermittently being lost (and replaced by the generated default). We instead
+// pin git to the same checkout the daemon pushes from (see findRepoDir in
+// internal/bridge/git.go), falling back to the inherited cwd only when no
+// checkout is found under the workspace root.
+//
+// It is a package var so tests can stub branch resolution.
+var currentGitBranch = func(ctx context.Context) string {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, "git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+	c := exec.CommandContext(cctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	if dir := repoDir(); dir != "" {
+		c.Dir = dir
+	}
+	out, err := c.Output()
 	if err != nil {
 		return ""
 	}
@@ -126,6 +169,30 @@ func currentGitBranch(ctx context.Context) string {
 		return ""
 	}
 	return branch
+}
+
+// workspaceRoot is where the sandbox checks out the repository. The repo lives
+// in a subdirectory (workspaceRoot/<name>/.git), matching the bridge daemon.
+const workspaceRoot = "/workspace"
+
+// repoDir resolves the checked-out repository directory under the workspace
+// root, mirroring (*AgentBridge).findRepoDir in internal/bridge/git.go: the
+// single "*/.git" entry under /workspace. It returns "" when nothing is found,
+// letting the caller fall back to git's own working directory.
+func repoDir() string {
+	entries, err := os.ReadDir(workspaceRoot)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(workspaceRoot, e.Name(), ".git")); err == nil {
+			return filepath.Join(workspaceRoot, e.Name())
+		}
+	}
+	return ""
 }
 
 // --- spawn-task --------------------------------------------------------------

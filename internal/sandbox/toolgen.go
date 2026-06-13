@@ -23,7 +23,9 @@ var toolDefs = []toolDef{
 	{
 		name: "create-pull-request",
 		description: "Create a pull request for the committed changes. DO NOT use 'gh' CLI - use this tool instead. " +
-			"It handles git push and PR creation automatically with pre-configured authentication. You MUST provide a " +
+			"It handles git push and PR creation automatically with pre-configured authentication. Before committing, make " +
+			"sure you are on a dedicated feature branch (e.g. `git checkout -b feature/short-description`); do NOT commit on " +
+			"the base branch (main/master) or a detached HEAD, or PR creation will be rejected. You MUST provide a " +
 			"descriptive title and body that explain what changes were made. Call this after committing your changes.",
 		argsBlock: `    title: z
       .string()

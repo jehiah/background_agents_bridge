@@ -24,7 +24,17 @@ func cpClient(t *testing.T, h http.HandlerFunc) *controlplane.Client {
 	return c
 }
 
+// stubBranch overrides currentGitBranch for the duration of a test so PR tests
+// don't depend on the real checkout's branch.
+func stubBranch(t *testing.T, name string) {
+	t.Helper()
+	orig := currentGitBranch
+	currentGitBranch = func(context.Context) string { return name }
+	t.Cleanup(func() { currentGitBranch = orig })
+}
+
 func TestRunCreatePRSuccess(t *testing.T) {
+	stubBranch(t, "feature/x")
 	c := cpClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/sessions/sess-1/pr" {
 			t.Errorf("path = %s", r.URL.Path)
@@ -38,6 +48,7 @@ func TestRunCreatePRSuccess(t *testing.T) {
 }
 
 func TestRunCreatePRManual(t *testing.T) {
+	stubBranch(t, "feature/x")
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"manual","createPrUrl":"https://x/compare"}`))
 	})
@@ -48,6 +59,7 @@ func TestRunCreatePRManual(t *testing.T) {
 }
 
 func TestRunCreatePRConflict(t *testing.T) {
+	stubBranch(t, "feature/x")
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write([]byte(`{"error":"exists"}`))
@@ -55,6 +67,33 @@ func TestRunCreatePRConflict(t *testing.T) {
 	got := runCreatePR(context.Background(), c, map[string]any{"title": "T", "body": "B"})
 	if !strings.Contains(got, "Conflict: exists") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// TestRunCreatePRRejectsNonFeatureBranch ensures the tool stops before calling
+// the control plane when the checkout isn't on a usable feature branch.
+func TestRunCreatePRRejectsNonFeatureBranch(t *testing.T) {
+	cases := []struct {
+		name string
+		head string
+		base string
+	}{
+		{"detached", "", ""},
+		{"main", "main", ""},
+		{"master", "master", ""},
+		{"equals base", "develop", "develop"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubBranch(t, tc.head)
+			c := cpClient(t, func(http.ResponseWriter, *http.Request) {
+				t.Fatal("control plane should not be called")
+			})
+			got := runCreatePR(context.Background(), c, map[string]any{"title": "T", "body": "B", "baseBranch": tc.base})
+			if !strings.Contains(got, "Cannot create a pull request") {
+				t.Fatalf("got %q", got)
+			}
+		})
 	}
 }
 
