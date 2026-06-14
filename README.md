@@ -44,8 +44,7 @@ backwards compatibility.
 - **Git identity configuration** per prompt author.
 - **Self-install** on startup:
   - registers `bridge git-credential` as git's `credential.helper`
-    (`git config --system credential.helper "!<exe> git-credential"`), replacing
-    the standalone shell helper;
+    (`git config --system credential.helper "bridge git-credential"`)
   - writes an OpenCode tool definition for each tool into
     `~/.config/opencode/tools/` — a thin `.js` shim that shells back into
     `bridge tool <name>`.
@@ -65,9 +64,9 @@ go build ./cmd/bridge
 ./bridge connect \
   --sandbox-id          "$SANDBOX_ID" \
   --session-id          "$SESSION_ID" \
-  --control-plane       "https://control-plane.example" \
-  --sandbox-auth-token "$AUTH_TOKEN" \
-  --opencode-port       4096
+  --control-plane-url   "https://control-plane.example" \
+  --sandbox-auth-token  "$SANDBOX_AUTH_TOKEN" \
+  --opencode-port        4096
 ```
 
 The short-lived modes (`git-credential`, `tool`) are spawned by git and OpenCode
@@ -97,7 +96,7 @@ with the `Metadata-Flavor: Google` header) — no cloud SDK dependency.
 | ----------------------- | --------------------- | ----------------------------- |
 | `--sandbox-id`          | `sandbox_id`          |                               |
 | `--session-id`          | `session_id`          |                               |
-| `--control-plane`       | `control_plane_url`   |                               |
+| `--control-plane-url`   | `control_plane_url`   |                               |
 | `--sandbox-auth-token`  | `sandbox_auth_token`  |                               |
 | `--opencode-port`       | `opencode_port`       | falls back to `4096` if unset |
 
@@ -162,7 +161,3 @@ as a secondary reference, but the Python bridge is the source of truth.
 
 - [Background Agents / Open-Inspect](https://github.com/ColeMurray/background-agents/)
 - [OpenCode](https://opencode.ai)
-
-## License
-
-[MIT](LICENSE) © Jehiah Czebotar
