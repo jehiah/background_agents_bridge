@@ -28,9 +28,38 @@ func Install(log *slog.Logger) {
 		log.Error("install.executable_path_error", "exc", err)
 		return
 	}
+	// The OpenCode tool shim spawns the bridge by this path from an arbitrary
+	// working directory, so it must be absolute. os.Executable does not always
+	// guarantee that; resolve it and bail if we can't.
+	exe, err = absExe(exe)
+	if err != nil {
+		log.Error("install.executable_resolve_error", "exc", err)
+		return
+	}
 
 	installCredentialHelper(log, exe)
 	installTools(log, exe)
+}
+
+// absExe returns an absolute path to the bridge executable. os.Executable may
+// return a relative path or a bare command name (resolved via $PATH); the tool
+// shim needs a fully-qualified path because it spawns the bridge from a
+// different working directory.
+func absExe(exe string) (string, error) {
+	if filepath.IsAbs(exe) {
+		return exe, nil
+	}
+	// A bare name (no separator) must be looked up on $PATH; a relative path
+	// (e.g. "./bridge") is found directly by LookPath, then made absolute.
+	resolved, err := exec.LookPath(exe)
+	if err != nil {
+		return "", fmt.Errorf("resolve bridge executable %q: %w", exe, err)
+	}
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", fmt.Errorf("resolve bridge executable %q: %w", exe, err)
+	}
+	return abs, nil
 }
 
 // installCredentialHelper points git's credential.helper at `<exe> git-credential`.
@@ -77,13 +106,18 @@ func installTools(log *slog.Logger, exe string) {
 		return
 	}
 
-	for _, def := range toolDefs {
-		path := filepath.Join(dir, fileNameFor(def.name))
-		if err := os.WriteFile(path, []byte(generateToolJS(def, exe)), 0o644); err != nil {
-			log.Error("install.tool_write_error", "exc", err, "tool", def.name, "path", path)
+	for _, name := range toolDefNames() {
+		js, err := generateToolJS(name, exe)
+		if err != nil {
+			log.Error("install.tool_render_error", "exc", err, "tool", name)
 			continue
 		}
-		log.Info("install.tool", "tool", def.name, "path", path)
+		path := filepath.Join(dir, fileNameFor(name))
+		if err := os.WriteFile(path, []byte(js), 0o644); err != nil {
+			log.Error("install.tool_write_error", "exc", err, "tool", name, "path", path)
+			continue
+		}
+		log.Info("install.tool", "tool", name, "path", path)
 	}
 }
 
