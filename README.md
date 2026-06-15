@@ -28,15 +28,13 @@ runs in one of several modes, selected by the first argument:
 
 | Mode | Purpose |
 | ---- | ------- |
-| `bridge connect` | The long-running service: connect OpenCode to the control plane over a WebSocket. On startup it **self-installs** the two modes below. |
+| `bridge connect-opencode` | The long-running service: connect OpenCode to the control plane over a WebSocket. On startup it **self-installs** the `git-credential` and `tool` helpers below. |
+| `bridge run-opencode` | Launch `opencode serve` as a child process, streaming its stdout/stderr through bridge — lets the provisioner manage a single process while keeping opencode logs visible. |
 | `bridge git-credential <get\|store\|erase>` | A [git credential helper](https://git-scm.com/docs/gitcredentials#_custom_helpers): brokers a fresh SCM token from the control plane on each git op (no caching). |
 | `bridge tool <name>` | Execute one OpenCode tool — reads JSON args on stdin, proxies to the control plane, writes the agent-facing result on stdout. |
 | `bridge install` | Run the self-install steps only (credential helper + tool files). |
 
-Invoking `bridge` with flags and no subcommand is treated as `connect` for
-backwards compatibility.
-
-### `connect`
+### `connect-opencode`
 
 - **WebSocket connection** to the control plane Durable Object, including
   reconnection, **heartbeat**, **event forwarding** (tool calls, token streams,
@@ -61,13 +59,22 @@ definitions (name, description, args schema) and their execution.
 ```sh
 go build ./cmd/bridge
 
-./bridge connect \
+./bridge connect-opencode \
   --sandbox-id          "$SANDBOX_ID" \
   --session-id          "$SESSION_ID" \
   --control-plane-url   "https://control-plane.example" \
   --sandbox-auth-token  "$SANDBOX_AUTH_TOKEN" \
   --opencode-port        4096
 ```
+
+### `run-opencode`
+
+Spawns `opencode serve --print-logs --port <port> --hostname 127.0.0.1` and
+forwards its stdout/stderr. Working directory defaults to `/workspace/$REPO_NAME`
+(falling back to `/workspace`). The opencode config is read from the
+`OPENCODE_CONFIG_CONTENT` env var; if unset, a default of
+`{"permission":{"*":"allow"}}` is supplied so opencode still boots in a
+sandboxed VM.
 
 The short-lived modes (`git-credential`, `tool`) are spawned by git and OpenCode
 rather than run by hand; they resolve their configuration from the inherited
@@ -115,7 +122,7 @@ gcloud compute instances create bridge-vm \
 
 ## Layout
 
-- `cmd/bridge` — subcommand dispatch (`connect` | `git-credential` | `tool` | `install`).
+- `cmd/bridge` — subcommand dispatch (`connect-opencode` | `run-opencode` | `git-credential` | `tool` | `install`).
 - `internal/config` — flag→env→GCE-metadata resolution shared by every mode.
 - `internal/gcpmeta` — minimal GCE metadata client.
 - `internal/controlplane` — the typed control-plane client: one method per
@@ -136,7 +143,7 @@ gcloud compute instances create bridge-vm \
 - `internal/sandbox` — sandbox-side glue: the credential helper, the
   `bridge tool` dispatch and agent-facing formatting, and the self-install of the
   credential helper and OpenCode tool files.
-- `internal/bridge` — the `connect`-mode WebSocket bridge (reconnect loop,
+- `internal/bridge` — the `connect-opencode`-mode WebSocket bridge (reconnect loop,
   heartbeat, event forwarding, command handling, git identity + push).
 
 ## Design notes
