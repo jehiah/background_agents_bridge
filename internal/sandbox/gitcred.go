@@ -3,22 +3,36 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jehiah/background_agents_bridge/internal/config"
 	"github.com/jehiah/background_agents_bridge/internal/controlplane"
 )
 
+// credCacheFile is the on-disk cache of brokered SCM credentials, keyed by host.
+// Located under the user's home so multiple bridge invocations (one per git op)
+// share it within a single sandbox.
+const credCacheFile = ".credentials/scm-creds.json"
+
+// credExpiryBuffer is subtracted from each entry's expiry so we refresh before
+// the token actually dies — a git push that starts with 5s left would otherwise
+// race the server.
+const credExpiryBuffer = 60 * time.Second
+
 // GitCredential implements the git credential-helper protocol
 // (https://git-scm.com/docs/gitcredentials#_custom_helpers). git invokes the
 // helper with the operation as the final argument.
 //
-// Only "get" does anything: it brokers a fresh SCM token from the control plane
-// for each git operation. Unlike the shell helper it replaces, it never caches —
-// every get refetches. "store"/"erase"/unknown are no-ops (exit 0).
+// "get" returns a cached credential when one exists and has not expired,
+// otherwise it brokers a fresh one from the control plane and writes it to
+// ~/.credentials/scm-creds.json for the next invocation. "store"/"erase"/unknown
+// are no-ops (exit 0).
 //
 // stdin carries the request attributes git writes (protocol=, host=, path=, ...);
 // stdout receives the credential lines.
@@ -42,6 +56,13 @@ func GitCredential(op string, stdin io.Reader, stdout io.Writer) error {
 		host = "github.com"
 	}
 
+	cachePath, _ := credCachePath()
+	cache, _ := readCredCache(cachePath)
+	if creds, ok := cache[host]; ok && !credExpired(creds, time.Now()) {
+		_, err := creds.WriteTo(stdout)
+		return err
+	}
+
 	cfg := config.Resolve(config.Flags{})
 	c, err := controlplane.New(cfg.ControlPlaneURL, cfg.AuthToken, cfg.SessionID)
 	if err != nil {
@@ -53,15 +74,84 @@ func GitCredential(op string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 
-	if _, err := fmt.Fprintf(stdout, "username=%s\n", creds.Username); err != nil {
+	if cachePath != "" {
+		if cache == nil {
+			cache = map[string]controlplane.Credentials{}
+		}
+		cache[host] = creds
+		_ = writeCredCache(cachePath, cache)
+	}
+
+	_, err = creds.WriteTo(stdout)
+	return err
+}
+
+// credExpired reports whether creds are too close to (or past) their expiry to
+// be safely reused. Entries with no expiry are treated as expired so we never
+// keep an unbounded token in the cache.
+func credExpired(creds controlplane.Credentials, now time.Time) bool {
+	if creds.ExpiresAtEpochMs <= 0 {
+		return true
+	}
+	expiry := time.UnixMilli(creds.ExpiresAtEpochMs)
+	return !now.Before(expiry.Add(-credExpiryBuffer))
+}
+
+// credCachePath returns the absolute path to the on-disk cache file.
+func credCachePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, credCacheFile), nil
+}
+
+// readCredCache loads the cache file. A missing/corrupt file yields an empty
+// map and no error — callers refetch on cache miss anyway.
+func readCredCache(path string) (map[string]controlplane.Credentials, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cache map[string]controlplane.Credentials
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, err
+	}
+	return cache, nil
+}
+
+// writeCredCache atomically writes the cache, mode 0600 (the file holds bearer
+// tokens). Directory is created with 0700 if missing.
+func writeCredCache(path string, cache map[string]controlplane.Credentials) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if creds.Password != "" {
-		if _, err := fmt.Fprintf(stdout, "password=%s\n", creds.Password); err != nil {
-			return err
-		}
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return err
 	}
-	return nil
+	tmp, err := os.CreateTemp(dir, ".scm-creds-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // parseCredentialAttrs reads git's key=value request lines until a blank line or
