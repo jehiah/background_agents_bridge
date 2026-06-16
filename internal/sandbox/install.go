@@ -14,7 +14,7 @@ import (
 const gitConfigTimeout = 10 * time.Second
 
 // Install wires the bridge into the sandbox so OpenCode and git use it. It is
-// run on `connect` startup (and exposed as `bridge install`):
+// run on `connect-opencode` startup (and exposed as `bridge install`):
 //
 //  1. registers the bridge as git's credential helper, replacing the standalone
 //     shell helper — credentials are brokered fresh per git op, never cached;

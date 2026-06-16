@@ -1,9 +1,12 @@
 // Command bridge is the sandbox side of background-agents: everything in the
 // sandbox that talks to the control plane. It runs in one of several modes:
 //
-//	bridge connect [flags]              connect a local OpenCode to the control
+//	bridge connect-opencode [flags]     connect a local OpenCode to the control
 //	                                    plane over a WebSocket (the long-running
-//	                                    service) and self-install the helpers below
+//	                                    service); on startup it self-installs the
+//	                                    git-credential and tool helpers below
+//	bridge run-opencode [flags]         run `opencode serve` as a subprocess,
+//	                                    streaming its stdout/stderr through
 //	bridge git-credential <get|...>     git credential helper (brokers SCM tokens)
 //	bridge tool <name>                  execute one OpenCode tool (args JSON on
 //	                                    stdin, result on stdout)
@@ -11,7 +14,7 @@
 //
 // A subcommand is always required.
 //
-// The connect mode is a Go port of the upstream Python bridge.
+// The connect-opencode mode is a Go port of the upstream Python bridge.
 package main
 
 import (
@@ -20,14 +23,23 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jehiah/background_agents_bridge/internal/bridge"
 	"github.com/jehiah/background_agents_bridge/internal/config"
 	"github.com/jehiah/background_agents_bridge/internal/sandbox"
 )
+
+const usageLine = "usage: bridge <connect-opencode|run-opencode|git-credential|tool|install> [flags] ..."
+
+// defaultOpencodeConfig is used when OPENCODE_CONFIG_CONTENT is unset: blanket
+// allow, no MCP servers. Provisioners normally supply a richer config.
+const defaultOpencodeConfig = `{"permission":{"*":"allow"}}`
 
 // newFlagSet builds a flag set that exits on error and prints usage under the
 // given subcommand name.
@@ -44,7 +56,7 @@ func main() {
 	// Dispatch on the first argument, which must name a subcommand.
 	args := os.Args[1:]
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: bridge <connect|git-credential|tool|install> [flags] ...")
+		fmt.Fprintln(os.Stderr, usageLine)
 		os.Exit(2)
 	}
 	cmd := args[0]
@@ -57,11 +69,13 @@ func main() {
 		runTool(args)
 	case "install":
 		runInstall()
-	case "connect":
+	case "connect-opencode":
 		runConnect(args)
+	case "run-opencode":
+		runOpencode(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
-		fmt.Fprintln(os.Stderr, "usage: bridge <connect|git-credential|tool|install> [flags] ...")
+		fmt.Fprintln(os.Stderr, usageLine)
 		os.Exit(2)
 	}
 }
@@ -69,7 +83,7 @@ func main() {
 // runConnect runs the long-lived control-plane bridge, after self-installing the
 // git credential helper and OpenCode tools.
 func runConnect(argv []string) {
-	fs := newFlagSet("connect")
+	fs := newFlagSet("connect-opencode")
 	var f config.Flags
 	fs.StringVar(&f.SandboxID, "sandbox-id", "", "Sandbox ID")
 	fs.StringVar(&f.SessionID, "session-id", "", "Session ID for WebSocket connection")
@@ -109,6 +123,84 @@ func runConnect(argv []string) {
 		logger.Error("bridge.exit", "exc", err)
 		os.Exit(1)
 	}
+}
+
+// runOpencode launches `opencode serve` as a child process, streaming its
+// stdout/stderr through ours. It replaces the standalone opencode.service so a
+// provisioner only manages one long-lived process (the bridge), while still
+// giving operators direct visibility into opencode's logs.
+//
+// Configuration:
+//   - port: --opencode-port flag, else OPENCODE_PORT env / metadata, else 4096.
+//   - workdir: --workdir flag, else /workspace/$REPO_NAME, else /workspace.
+//   - OPENCODE_CONFIG_CONTENT: passed through from the environment; if unset, a
+//     default `{"permission":{"*":"allow"}}` is supplied so opencode still boots.
+//   - OPENCODE_CLIENT=serve is asserted to identify this client to opencode.
+func runOpencode(argv []string) {
+	fs := newFlagSet("run-opencode")
+	var f config.Flags
+	fs.IntVar(&f.OpencodePort, "opencode-port", 0, "OpenCode port (default 4096)")
+	var workDir string
+	fs.StringVar(&workDir, "workdir", "", "working directory for opencode (default /workspace/$REPO_NAME, or /workspace)")
+	var opencodeBin string
+	fs.StringVar(&opencodeBin, "opencode-bin", "opencode", "path to the opencode binary")
+	var hostname string
+	fs.StringVar(&hostname, "hostname", "127.0.0.1", "hostname opencode binds to")
+	_ = fs.Parse(argv)
+
+	cfg := config.Resolve(f)
+
+	if workDir == "" {
+		workDir = "/workspace"
+		if repo := os.Getenv("REPO_NAME"); repo != "" {
+			candidate := "/workspace/" + repo
+			if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+				workDir = candidate
+			}
+		}
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()})).With(
+		"service", "sandbox", "component", "opencode",
+	)
+
+	env := os.Environ()
+	if os.Getenv("OPENCODE_CONFIG_CONTENT") == "" {
+		env = append(env, "OPENCODE_CONFIG_CONTENT="+defaultOpencodeConfig)
+		logger.Info("opencode.config.default")
+	}
+	env = append(env, "OPENCODE_CLIENT=serve")
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cmd := exec.CommandContext(ctx, opencodeBin, "serve",
+		"--print-logs",
+		"--port", strconv.Itoa(cfg.OpencodePort),
+		"--hostname", hostname,
+	)
+	cmd.Dir = workDir
+	cmd.Env = env
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	// On shutdown, send SIGTERM first and give opencode a moment to exit cleanly
+	// before the context-cancel SIGKILL kicks in.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 10 * time.Second
+
+	logger.Info("opencode.start", "bin", opencodeBin, "port", cfg.OpencodePort, "workdir", workDir)
+	err := cmd.Run()
+	// A non-nil err after the context is cancelled (we sent SIGTERM) is a
+	// graceful shutdown, not a failure — exit 0 so systemd/supervisors don't
+	// flag it as a crash.
+	if err != nil && ctx.Err() == nil {
+		logger.Error("opencode.exit", "exc", err)
+		if ee, ok := err.(*exec.ExitError); ok {
+			os.Exit(ee.ExitCode())
+		}
+		os.Exit(1)
+	}
+	logger.Info("opencode.exit", "code", 0)
 }
 
 // runGitCredential serves the git credential-helper protocol. git passes the
