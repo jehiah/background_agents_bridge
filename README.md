@@ -28,8 +28,8 @@ runs in one of several modes, selected by the first argument:
 
 | Mode | Purpose |
 | ---- | ------- |
-| `bridge connect-opencode` | The long-running service: connect OpenCode to the control plane over a WebSocket. On startup it **self-installs** the `git-credential` and `tool` helpers below. |
-| `bridge run-opencode` | Launch `opencode serve` as a child process, streaming its stdout/stderr through bridge — lets the provisioner manage a single process while keeping opencode logs visible. |
+| `bridge connect-opencode` | The long-running service: wait for the opencode TCP port to accept connections, then connect OpenCode to the control plane over a WebSocket. On startup it **self-installs** the `git-credential` and `tool` helpers below. |
+| `bridge run-opencode` | Launch `opencode serve` as a child process **and** chain into `connect-opencode` in the same process, so a single command supervises both. |
 | `bridge git-credential <get\|store\|erase>` | A [git credential helper](https://git-scm.com/docs/gitcredentials#_custom_helpers): brokers a fresh SCM token from the control plane on each git op (no caching). |
 | `bridge tool <name>` | Execute one OpenCode tool — reads JSON args on stdin, proxies to the control plane, writes the agent-facing result on stdout. |
 | `bridge install` | Run the self-install steps only (credential helper + tool files). |
@@ -69,12 +69,14 @@ go build ./cmd/bridge
 
 ### `run-opencode`
 
-Spawns `opencode serve --print-logs --port <port> --hostname 127.0.0.1` and
-forwards its stdout/stderr. Working directory defaults to `/workspace/$REPO_NAME`
-(falling back to `/workspace`). The opencode config is read from the
-`OPENCODE_CONFIG_CONTENT` env var; if unset, a default of
+"Run and connect": spawns `opencode serve --print-logs --port <port> --hostname
+127.0.0.1` and concurrently runs the `connect-opencode` bridge in the same
+process. Either side exiting tears the other down. Working directory defaults
+to `/workspace/$REPO_NAME` (falling back to `/workspace`). The opencode config
+is read from the `OPENCODE_CONFIG_CONTENT` env var; if unset, a default of
 `{"permission":{"*":"allow"}}` is supplied so opencode still boots in a
-sandboxed VM.
+sandboxed VM. The bridge polls 127.0.0.1:`<opencode-port>` for up to
+`--opencode-wait` seconds (default 30) before dialing the control plane.
 
 The short-lived modes (`git-credential`, `tool`) are spawned by git and OpenCode
 rather than run by hand; they resolve their configuration from the inherited
