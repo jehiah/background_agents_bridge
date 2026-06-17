@@ -46,13 +46,17 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 	}
 
 	hadError := false
+	emittedOutput := false
 	var errMsg string
 	emit := func(e event) {
-		if t, _ := e["type"].(string); t == "error" {
+		switch t, _ := e["type"].(string); t {
+		case "error":
 			hadError = true
 			if m, ok := e["error"].(string); ok {
 				errMsg = m
 			}
+		case "token", "tool_call", "step_finish":
+			emittedOutput = true
 		}
 		b.sendEvent(e)
 	}
@@ -66,6 +70,16 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 		b.log.Error("prompt.error", "exc", err, "message_id", messageID)
 		b.sendEvent(executionCompleteEvent(messageID, false, err.Error()))
 		return nil
+	}
+
+	if !hadError && !emittedOutput {
+		hadError = true
+		errMsg = "OpenCode completed without emitting assistant output."
+		b.log.Error("prompt.no_output",
+			"message_id", messageID,
+			"model", model,
+			"reasoning_effort", reasoningEffort,
+		)
 	}
 
 	if hadError {

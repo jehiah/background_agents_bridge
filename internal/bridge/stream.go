@@ -38,6 +38,7 @@ type streamState struct {
 	cumulativeText         map[string]string
 	emittedToolStates      map[string]bool
 	allowedAssistantMsgIDs map[string]bool
+	userMessageIDs         map[string]bool
 	pendingParts           map[string][]pendingPart
 	pendingPartsTotal      int
 	pendingDropLogged      bool
@@ -73,6 +74,7 @@ func (b *AgentBridge) streamOpencodeResponse(
 		cumulativeText:         map[string]string{},
 		emittedToolStates:      map[string]bool{},
 		allowedAssistantMsgIDs: map[string]bool{},
+		userMessageIDs:         map[string]bool{ocMsgID: true},
 		pendingParts:           map[string][]pendingPart{},
 		trackedChildSessionIDs: map[string]bool{},
 	}
@@ -299,7 +301,10 @@ func (s *streamState) handleMessageUpdated(props map[string]any, emit func(event
 	role := gstr(info, "role")
 
 	if msgSessionID == s.opencodeSessionID {
-		parentMatches := gstr(info, "parentID") == s.opencodeMessageID
+		if role == "user" && ocMsgID != "" {
+			s.userMessageIDs[ocMsgID] = true
+		}
+		parentMatches := s.userMessageIDs[gstr(info, "parentID")]
 		isCompactionSummary := info["summary"] == true
 		if role == "assistant" && ocMsgID != "" {
 			if parentMatches || (s.compactionOccurred && !isCompactionSummary) {
@@ -446,7 +451,7 @@ func (b *AgentBridge) fetchFinalMessageState(ctx context.Context, s *streamState
 			continue
 		}
 		msgID := gstr(info, "id")
-		parentMatches := gstr(info, "parentID") == s.opencodeMessageID
+		parentMatches := s.userMessageIDs[gstr(info, "parentID")]
 		inTracked := s.allowedAssistantMsgIDs[msgID]
 		isCompactionSummary := info["summary"] == true
 		if !parentMatches && !inTracked && (!s.compactionOccurred || isCompactionSummary) {

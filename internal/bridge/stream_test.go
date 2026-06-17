@@ -36,6 +36,7 @@ func newStreamState() *streamState {
 		cumulativeText:         map[string]string{},
 		emittedToolStates:      map[string]bool{},
 		allowedAssistantMsgIDs: map[string]bool{},
+		userMessageIDs:         map[string]bool{"msg_user": true},
 		pendingParts:           map[string][]pendingPart{},
 		trackedChildSessionIDs: map[string]bool{},
 	}
@@ -154,6 +155,34 @@ func TestStreamUnrelatedParentIgnored(t *testing.T) {
 	// The part buffers (msg_x never authorized) and nothing is emitted.
 	if len(c.events) != 0 {
 		t.Fatalf("expected no emitted events, got %v", c.types())
+	}
+}
+
+// TestStreamTracksActualUserMessageID verifies that when OpenCode regenerates
+// the user message ID, assistant messages parented to the actual user ID are
+// still authorized.
+func TestStreamTracksActualUserMessageID(t *testing.T) {
+	b := testBridge()
+	s := newStreamState()
+	c := &collector{}
+
+	const actualUserID = "msg_actual_user"
+
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{"id": actualUserID, "sessionID": "ses_parent", "role": "user"},
+	}, c.emit)
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{"id": "msg_a", "sessionID": "ses_parent", "parentID": actualUserID, "role": "assistant"},
+	}, c.emit)
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{"type": "text", "id": "p1", "messageID": "msg_a", "sessionID": "ses_parent", "text": "Hello via actual parent"},
+	}, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"token"}) {
+		t.Fatalf("expected token forwarded, got %v", got)
+	}
+	if c.events[0]["content"] != "Hello via actual parent" {
+		t.Errorf("content = %q", c.events[0]["content"])
 	}
 }
 
