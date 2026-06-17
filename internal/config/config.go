@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/jehiah/background_agents_bridge/internal/gcpmeta"
 )
@@ -28,6 +29,7 @@ type Resolved struct {
 	ControlPlaneURL string
 	AuthToken       string
 	OpencodePort    int
+	OpencodeWait    time.Duration
 }
 
 // Flags carries the values parsed from the command line. Empty strings (and a
@@ -38,6 +40,7 @@ type Flags struct {
 	ControlPlaneURL string
 	AuthToken       string
 	OpencodePort    int
+	OpencodeWait    time.Duration
 }
 
 // field describes how one string value maps onto an env var and a metadata key.
