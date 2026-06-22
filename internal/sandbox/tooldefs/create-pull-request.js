@@ -17,6 +17,10 @@ export default tool({
       .string()
       .optional()
       .describe("Target branch to merge into. Defaults to the repository's default branch (usually 'main')."),
+    directory: z
+      .string()
+      .optional()
+      .describe("Path to the git checkout. Defaults to __BRIDGE_DEFAULT_REPO_DIR__"),
   },
   async execute(args) {
     return await runBridgeTool("create-pull-request", args);

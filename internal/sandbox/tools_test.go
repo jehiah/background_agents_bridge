@@ -29,7 +29,7 @@ func cpClient(t *testing.T, h http.HandlerFunc) *controlplane.Client {
 func stubBranch(t *testing.T, name string) {
 	t.Helper()
 	orig := currentGitBranch
-	currentGitBranch = func(context.Context) string { return name }
+	currentGitBranch = func(context.Context, string) string { return name }
 	t.Cleanup(func() { currentGitBranch = orig })
 }
 
