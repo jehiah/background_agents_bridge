@@ -1,7 +1,8 @@
 export default tool({
   name: "create-pull-request",
   description:
-    "Create a pull request for the committed changes. DO NOT use 'gh' CLI - use this tool instead. " +
+    "Create a pull request for the committed changes in the session's repository at __BRIDGE_DEFAULT_REPO_DIR__. " +
+    "DO NOT use 'gh' CLI - use this tool instead. " +
     "It handles git push and PR creation automatically with pre-configured authentication. Before committing, make " +
     "sure you are on a dedicated feature branch (e.g. `git checkout -b feature/short-description`); do NOT commit on " +
     "the base branch (main/master) or a detached HEAD, or PR creation will be rejected. You MUST provide a " +
@@ -17,10 +18,6 @@ export default tool({
       .string()
       .optional()
       .describe("Target branch to merge into. Defaults to the repository's default branch (usually 'main')."),
-    directory: z
-      .string()
-      .optional()
-      .describe("Path to the git checkout. Defaults to __BRIDGE_DEFAULT_REPO_DIR__"),
   },
   async execute(args) {
     return await runBridgeTool("create-pull-request", args);
