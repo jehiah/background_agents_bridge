@@ -48,7 +48,7 @@ func TestFindRepoDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := testBridge()
-	b.repoPath = root
+	b.workspacePath = root
 
 	got, ok := b.findRepoDir()
 	if !ok {
@@ -61,7 +61,7 @@ func TestFindRepoDir(t *testing.T) {
 
 func TestFindRepoDirNone(t *testing.T) {
 	b := testBridge()
-	b.repoPath = t.TempDir()
+	b.workspacePath = t.TempDir()
 	if _, ok := b.findRepoDir(); ok {
 		t.Error("expected no repo in empty dir")
 	}
@@ -79,7 +79,7 @@ func TestFindRepoDirPrefersRepoName(t *testing.T) {
 		}
 	}
 	b := testBridge()
-	b.repoPath = root
+	b.workspacePath = root
 
 	t.Setenv("REPO_NAME", "wanted")
 	got, ok := b.findRepoDir()
@@ -100,7 +100,7 @@ func TestFindRepoDirRepoNameMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := testBridge()
-	b.repoPath = root
+	b.workspacePath = root
 
 	t.Setenv("REPO_NAME", "does-not-exist")
 	got, ok := b.findRepoDir()
@@ -116,7 +116,7 @@ func TestFindRepoDirRepoNameMissing(t *testing.T) {
 // branchName, matching the Python contract.
 func TestHandlePushNoRepository(t *testing.T) {
 	b := testBridge()
-	b.repoPath = t.TempDir() // no repo inside
+	b.workspacePath = t.TempDir() // no repo inside
 	b.rootCtx = t.Context()
 
 	b.handlePush(t.Context(), &command{

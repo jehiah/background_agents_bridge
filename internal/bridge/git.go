@@ -16,19 +16,19 @@ import (
 // can be stripped from git output.
 var credentialURLRE = regexp.MustCompile(`(https?://)([^/\s@]+)@`)
 
-// findRepoDir locates the checked-out repository under repoPath. It prefers
-// repoPath/$REPO_NAME when REPO_NAME is set and that checkout exists, then falls
+// findRepoDir locates the checked-out repository under workspacePath. It prefers
+// workspacePath/$REPO_NAME when REPO_NAME is set and that checkout exists, then falls
 // back to the first "*/.git" entry (mirroring the Python glob). Preferring
 // REPO_NAME keeps handlePush pinned to the same tree opencode edits when more
 // than one checkout is present, matching resolveRepoDir in internal/sandbox.
 func (b *AgentBridge) findRepoDir() (string, bool) {
 	if repo := os.Getenv("REPO_NAME"); repo != "" {
-		cand := filepath.Join(b.repoPath, repo)
+		cand := filepath.Join(b.workspacePath, repo)
 		if _, err := os.Stat(filepath.Join(cand, ".git")); err == nil {
 			return cand, true
 		}
 	}
-	entries, err := os.ReadDir(b.repoPath)
+	entries, err := os.ReadDir(b.workspacePath)
 	if err != nil {
 		return "", false
 	}
@@ -36,8 +36,8 @@ func (b *AgentBridge) findRepoDir() (string, bool) {
 		if !e.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(b.repoPath, e.Name(), ".git")); err == nil {
-			return filepath.Join(b.repoPath, e.Name()), true
+		if _, err := os.Stat(filepath.Join(b.workspacePath, e.Name(), ".git")); err == nil {
+			return filepath.Join(b.workspacePath, e.Name()), true
 		}
 	}
 	return "", false

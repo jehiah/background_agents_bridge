@@ -46,7 +46,7 @@ type AgentBridge struct {
 	ids                  *identifier
 
 	sessionIDFile string
-	repoPath      string
+	workspacePath string
 
 	rootCtx context.Context
 	cancel  context.CancelFunc
@@ -82,7 +82,7 @@ func New(sandboxID, sessionID, controlPlaneURL, authToken string, opencodePort i
 		ids:             &identifier{},
 		pendingAcks:     make(map[string]event),
 		sessionIDFile:   filepath.Join(os.TempDir(), "opencode-session-id"),
-		repoPath:        "/workspace",
+		workspacePath:   "/workspace",
 		gitSyncDoneC:    make(chan struct{}),
 	}
 	b.sseInactivityTimeout = resolveTimeout(
