@@ -86,7 +86,7 @@ func apiErr(err error) (*controlplane.APIError, bool) {
 
 func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	baseBranch := argStr(args, "baseBranch")
-	headBranch := currentGitBranch(ctx, resolveRepoDir(argStr(args, "directory")))
+	headBranch := currentGitBranch(ctx, resolveRepoDir())
 	if msg := requireFeatureBranch(headBranch, baseBranch); msg != "" {
 		return msg
 	}
@@ -175,18 +175,17 @@ var currentGitBranch = func(ctx context.Context, dir string) string {
 // in a subdirectory (workspaceRoot/<name>/.git), matching the bridge daemon.
 const workspaceRoot = "/workspace"
 
-// resolveRepoDir picks the directory to run git in for a tool call:
-//  1. an explicit `directory` arg (trusted as-is),
-//  2. /workspace/$REPO_NAME when REPO_NAME is set AND that checkout exists,
-//  3. first single-"*/.git" autodiscovery under /workspace,
-//  4. "" → caller falls back to git's inherited cwd.
+// resolveRepoDir picks the directory to run git in for a tool call. The tool is
+// always bound to the session's repository, so there is no caller-supplied
+// override: it resolves to
+//  1. /workspace/$REPO_NAME when REPO_NAME is set AND that checkout exists,
+//  2. first single-"*/.git" autodiscovery under /workspace,
+//  3. "" → caller falls back to git's inherited cwd.
 //
-// Step 2 mirrors defaultWorkdir() in cmd/bridge so the PR tool reads HEAD from
-// the same tree opencode is editing.
-func resolveRepoDir(explicit string) string {
-	if explicit != "" {
-		return explicit
-	}
+// Step 1 mirrors defaultWorkdir() in cmd/bridge and (*AgentBridge).findRepoDir
+// so the PR tool reads HEAD from the same tree opencode is editing and the
+// daemon pushes from.
+func resolveRepoDir() string {
 	if repo := os.Getenv("REPO_NAME"); repo != "" {
 		cand := filepath.Join(workspaceRoot, repo)
 		if _, err := os.Stat(filepath.Join(cand, ".git")); err == nil {

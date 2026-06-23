@@ -16,10 +16,19 @@ import (
 // can be stripped from git output.
 var credentialURLRE = regexp.MustCompile(`(https?://)([^/\s@]+)@`)
 
-// findRepoDir locates the single checked-out repository under repoPath by
-// looking for a "*/.git" entry, mirroring the Python glob.
+// findRepoDir locates the checked-out repository under workspacePath. It prefers
+// workspacePath/$REPO_NAME when REPO_NAME is set and that checkout exists, then falls
+// back to the first "*/.git" entry (mirroring the Python glob). Preferring
+// REPO_NAME keeps handlePush pinned to the same tree opencode edits when more
+// than one checkout is present, matching resolveRepoDir in internal/sandbox.
 func (b *AgentBridge) findRepoDir() (string, bool) {
-	entries, err := os.ReadDir(b.repoPath)
+	if repo := os.Getenv("REPO_NAME"); repo != "" {
+		cand := filepath.Join(b.workspacePath, repo)
+		if _, err := os.Stat(filepath.Join(cand, ".git")); err == nil {
+			return cand, true
+		}
+	}
+	entries, err := os.ReadDir(b.workspacePath)
 	if err != nil {
 		return "", false
 	}
@@ -27,29 +36,22 @@ func (b *AgentBridge) findRepoDir() (string, bool) {
 		if !e.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(b.repoPath, e.Name(), ".git")); err == nil {
-			return filepath.Join(b.repoPath, e.Name()), true
+		if _, err := os.Stat(filepath.Join(b.workspacePath, e.Name(), ".git")); err == nil {
+			return filepath.Join(b.workspacePath, e.Name()), true
 		}
 	}
 	return "", false
 }
 
-// configureGitIdentity sets the local git user.name/user.email for commit
+// configureGitIdentity sets the global git user.name/user.email for commit
 // attribution. Failures are logged but not fatal.
 func (b *AgentBridge) configureGitIdentity(ctx context.Context, user GitUser) {
 	b.log.Debug("git.identity_configure", "git_name", user.Name, "git_email", user.Email)
 
-	repoDir, ok := b.findRepoDir()
-	if !ok {
-		b.log.Debug("git.identity_skip", "reason", "no_repository")
-		return
-	}
-
 	run := func(args ...string) error {
 		cctx, cancel := context.WithTimeout(ctx, gitConfigTimeout)
 		defer cancel()
-		c := exec.CommandContext(cctx, "git", append([]string{"config", "--local"}, args...)...)
-		c.Dir = repoDir
+		c := exec.CommandContext(cctx, "git", append([]string{"config", "--global"}, args...)...)
 		var stderr bytes.Buffer
 		c.Stderr = &stderr
 		return c.Run()

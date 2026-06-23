@@ -46,6 +46,18 @@ func TestGenerateToolJS(t *testing.T) {
 	if strings.Contains(js, "Not a standalone module") {
 		t.Errorf("fragment authoring comment leaked into generated JS\n---\n%s", js)
 	}
+
+	// The tool is bound to the session repo: it must name that path in its
+	// description and must NOT expose a caller-supplied directory arg.
+	if !strings.Contains(js, defaultRepoDir()) {
+		t.Errorf("description missing repo path %q\n---\n%s", defaultRepoDir(), js)
+	}
+	if strings.Contains(js, "__BRIDGE_DEFAULT_REPO_DIR__") {
+		t.Errorf("repo dir placeholder not substituted\n---\n%s", js)
+	}
+	if strings.Contains(js, "directory: z") {
+		t.Errorf("create-pull-request should not expose a directory arg\n---\n%s", js)
+	}
 }
 
 func TestGenerateToolJSAllTools(t *testing.T) {
