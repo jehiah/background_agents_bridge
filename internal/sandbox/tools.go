@@ -86,7 +86,7 @@ func apiErr(err error) (*controlplane.APIError, bool) {
 
 func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	baseBranch := argStr(args, "baseBranch")
-	headBranch := currentGitBranch(ctx)
+	headBranch := currentGitBranch(ctx, resolveRepoDir(argStr(args, "directory")))
 	if msg := requireFeatureBranch(headBranch, baseBranch); msg != "" {
 		return msg
 	}
@@ -153,11 +153,11 @@ func requireFeatureBranch(head, baseBranch string) string {
 // checkout is found under the workspace root.
 //
 // It is a package var so tests can stub branch resolution.
-var currentGitBranch = func(ctx context.Context) string {
+var currentGitBranch = func(ctx context.Context, dir string) string {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	c := exec.CommandContext(cctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
-	if dir := repoDir(); dir != "" {
+	if dir != "" {
 		c.Dir = dir
 	}
 	out, err := c.Output()
@@ -175,11 +175,32 @@ var currentGitBranch = func(ctx context.Context) string {
 // in a subdirectory (workspaceRoot/<name>/.git), matching the bridge daemon.
 const workspaceRoot = "/workspace"
 
-// repoDir resolves the checked-out repository directory under the workspace
+// resolveRepoDir picks the directory to run git in for a tool call:
+//  1. an explicit `directory` arg (trusted as-is),
+//  2. /workspace/$REPO_NAME when REPO_NAME is set AND that checkout exists,
+//  3. first single-"*/.git" autodiscovery under /workspace,
+//  4. "" → caller falls back to git's inherited cwd.
+//
+// Step 2 mirrors defaultWorkdir() in cmd/bridge so the PR tool reads HEAD from
+// the same tree opencode is editing.
+func resolveRepoDir(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if repo := os.Getenv("REPO_NAME"); repo != "" {
+		cand := filepath.Join(workspaceRoot, repo)
+		if _, err := os.Stat(filepath.Join(cand, ".git")); err == nil {
+			return cand
+		}
+	}
+	return firstRepoDir()
+}
+
+// firstRepoDir resolves the checked-out repository directory under the workspace
 // root, mirroring (*AgentBridge).findRepoDir in internal/bridge/git.go: the
 // single "*/.git" entry under /workspace. It returns "" when nothing is found,
 // letting the caller fall back to git's own working directory.
-func repoDir() string {
+func firstRepoDir() string {
 	entries, err := os.ReadDir(workspaceRoot)
 	if err != nil {
 		return ""

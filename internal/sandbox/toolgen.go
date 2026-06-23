@@ -4,7 +4,9 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -47,11 +49,31 @@ func generateToolJS(name, exePath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read tool definition %q: %w", name, err)
 	}
+	// Pre-substitute fragment-level placeholders (e.g. the materialized default
+	// repo dir): NewReplacer makes one pass over the input, so a placeholder
+	// inside the fragment would otherwise survive into the output.
+	fragS := strings.NewReplacer(
+		"__BRIDGE_DEFAULT_REPO_DIR__", fmt.Sprintf("%q", defaultRepoDir()),
+	).Replace(string(frag))
+
 	shim := strings.NewReplacer(
 		"__BRIDGE_BIN__", jsString(exePath),
-		"__BRIDGE_TOOL_DEF__", strings.TrimRight(stripLeadingComment(string(frag)), "\n"),
+		"__BRIDGE_TOOL_DEF__", strings.TrimRight(stripLeadingComment(fragS), "\n"),
 	).Replace(stripLeadingComment(toolJSTemplate))
 	return generatedHeader + shim, nil
+}
+
+// defaultRepoDir is the path baked into the generated tool file as the
+// create-pull-request default. It mirrors defaultWorkdir in cmd/bridge so the
+// agent sees the same directory opencode was launched in: /workspace/$REPO_NAME
+// when REPO_NAME is set, else /workspace. We do NOT stat the candidate here —
+// install runs early and the clone may not be in place yet; the tool itself
+// re-resolves at call time.
+func defaultRepoDir() string {
+	if repo := os.Getenv("REPO_NAME"); repo != "" {
+		return filepath.Join(workspaceRoot, repo)
+	}
+	return workspaceRoot
 }
 
 // stripLeadingComment drops the leading `//` comment block (the fragment's
