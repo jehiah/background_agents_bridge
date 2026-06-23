@@ -53,7 +53,7 @@ func generateToolJS(name, exePath string) (string, error) {
 	// repo dir): NewReplacer makes one pass over the input, so a placeholder
 	// inside the fragment would otherwise survive into the output.
 	fragS := strings.NewReplacer(
-		"__BRIDGE_DEFAULT_REPO_DIR__", fmt.Sprintf("%q", defaultRepoDir()),
+		"__BRIDGE_DEFAULT_REPO_DIR__", defaultRepoDir(),
 	).Replace(string(frag))
 
 	shim := strings.NewReplacer(
