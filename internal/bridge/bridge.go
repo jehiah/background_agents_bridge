@@ -77,7 +77,7 @@ func New(sandboxID, sessionID, controlPlaneURL, authToken string, opencodePort i
 		controlPlaneURL: controlPlaneURL,
 		authToken:       authToken,
 		opencodePort:    opencodePort,
-		opencodeBaseURL: fmt.Sprintf("http://localhost:%d", opencodePort),
+		opencodeBaseURL: fmt.Sprintf("http://127.0.0.1:%d", opencodePort),
 		log:             log,
 		ids:             &identifier{},
 		pendingAcks:     make(map[string]event),
