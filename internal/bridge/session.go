@@ -35,5 +35,7 @@ func (b *AgentBridge) saveSessionID() {
 	}
 	if err := os.WriteFile(b.sessionIDFile, []byte(id), 0o644); err != nil {
 		b.log.Error("opencode.session.save_error", "exc", err)
+		return
 	}
+	b.log.Info("opencode.session.saved", "opencode_session_id", id, "file", b.sessionIDFile)
 }

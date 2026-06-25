@@ -128,6 +128,10 @@ func (b *AgentBridge) streamOpencodeResponse(
 		if ev.Data == "" {
 			continue
 		}
+		// Audit raw session.updated events to debug missing session_title.
+		if strings.Contains(ev.Data, "session.updated") {
+			b.log.Debug("bridge.sse_raw_event", "etype", "session.updated", "raw", ev.Data)
+		}
 		var payload sseEvent
 		if json.Unmarshal([]byte(ev.Data), &payload) != nil {
 			b.log.Debug("bridge.sse_parse_error")
@@ -481,6 +485,7 @@ func (b *AgentBridge) sessionTitleEventFromSSE(s *streamState, etype string, pro
 	}
 	info := gmap(props, "info")
 	if info == nil {
+		b.log.Info("session_title.skip", "reason", "no_info", "opencode_session_id", s.opencodeSessionID, "props", props)
 		return nil
 	}
 	sid := gstr(props, "sessionID")
@@ -488,19 +493,24 @@ func (b *AgentBridge) sessionTitleEventFromSSE(s *streamState, etype string, pro
 		sid = gstr(info, "id")
 	}
 	if sid != s.opencodeSessionID {
+		b.log.Info("session_title.skip", "reason", "session_id_mismatch", "event_session_id", sid, "opencode_session_id", s.opencodeSessionID, "props", props)
 		return nil
 	}
 
-	title := normalizeForwardableTitle(gstr(info, "title"))
+	rawTitle := gstr(info, "title")
+	title := normalizeForwardableTitle(rawTitle)
 	if title == "" {
+		b.log.Info("session_title.skip", "reason", "empty_or_default_title", "raw_title", rawTitle, "opencode_session_id", sid, "props", props)
 		return nil
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if title == b.lastForwardedSessionTitle {
+		b.log.Info("session_title.skip", "reason", "duplicate", "title", title, "opencode_session_id", sid, "props", props)
 		return nil
 	}
 	b.lastForwardedSessionTitle = title
+	b.log.Info("session_title.forward", "title", title, "opencode_session_id", sid, "props", props)
 	return sessionTitleEvent(title)
 }
 
