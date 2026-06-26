@@ -2,13 +2,23 @@ package sandbox
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"text/template"
 	"time"
 )
+
+// ghWrapperTemplate is the `gh` wrapper script with {{ .Exe }} substituted for
+// the bridge binary path. Kept as a real .sh file so editors lint it; it is not
+// run as-is.
+//
+//go:embed gh_wrapper.sh
+var ghWrapperTemplate string
 
 // gitConfigTimeout bounds each `git config` invocation during install.
 const gitConfigTimeout = 10 * time.Second
@@ -38,7 +48,61 @@ func Install(log *slog.Logger) {
 	}
 
 	installCredentialHelper(log, exe)
+	installGHWrapper(log, exe)
 	installTools(log, exe)
+}
+
+// installGHWrapper drops a `gh` shell wrapper into the first directory on $PATH
+// so that invoking `gh` silently provisions a GitHub token. The wrapper asks the
+// bridge for a token (`<exe> git-credential gh-token`), exports it as
+// GITHUB_TOKEN, removes its own directory from $PATH so `command -v gh` resolves
+// the real binary, and execs it.
+func installGHWrapper(log *slog.Logger, exe string) {
+	dir := firstPathDir()
+	if dir == "" {
+		log.Warn("install.gh_wrapper_no_path")
+		return
+	}
+	script, err := ghWrapperScript(exe)
+	if err != nil {
+		log.Error("install.gh_wrapper_render_error", "exc", err)
+		return
+	}
+	path := filepath.Join(dir, "gh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		log.Error("install.gh_wrapper_error", "exc", err, "path", path)
+		return
+	}
+	log.Info("install.gh_wrapper", "path", path)
+}
+
+// firstPathDir returns the first non-empty entry in $PATH, or "" if PATH is
+// unset/empty.
+func firstPathDir() string {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir != "" {
+			return dir
+		}
+	}
+	return ""
+}
+
+// ghWrapperScript renders the `gh` wrapper from gh_wrapper.sh. exe must be an
+// absolute path to the bridge binary. The path is substituted unquoted, so a
+// path containing whitespace is rejected rather than producing a broken script.
+func ghWrapperScript(exe string) (string, error) {
+	if strings.ContainsAny(exe, " \t\n") {
+		return "", fmt.Errorf("bridge path %q contains whitespace", exe)
+	}
+	tmpl, err := template.New("gh_wrapper").Parse(ghWrapperTemplate)
+	if err != nil {
+		return "", fmt.Errorf("parse gh wrapper template: %w", err)
+	}
+	var b strings.Builder
+	if err := tmpl.Execute(&b, struct{ Exe string }{exe}); err != nil {
+		return "", fmt.Errorf("render gh wrapper: %w", err)
+	}
+	return b.String(), nil
 }
 
 // absExe returns an absolute path to the bridge executable. os.Executable may
