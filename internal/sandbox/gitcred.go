@@ -31,13 +31,25 @@ const credExpiryBuffer = 60 * time.Second
 //
 // "get" returns a cached credential when one exists and has not expired,
 // otherwise it brokers a fresh one from the control plane and writes it to
-// ~/.credentials/scm-creds.json for the next invocation. "store"/"erase"/unknown
-// are no-ops (exit 0).
+// ~/.credentials/scm-creds.json for the next invocation. "gh-token" resolves
+// the same github.com credential but prints just the token (password) on a
+// single line, so a `gh` wrapper can export it as GITHUB_TOKEN.
+// "store"/"erase"/unknown are no-ops (exit 0).
 //
 // stdin carries the request attributes git writes (protocol=, host=, path=, ...);
 // stdout receives the credential lines.
 func GitCredential(op string, stdin io.Reader, stdout io.Writer) error {
-	if op != "get" {
+	switch op {
+	case "get":
+		// fall through to the get handling below.
+	case "gh-token":
+		creds, err := resolveCredentials("github.com")
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(stdout, creds.Password)
+		return err
+	default:
 		return nil
 	}
 
@@ -56,22 +68,33 @@ func GitCredential(op string, stdin io.Reader, stdout io.Writer) error {
 		host = "github.com"
 	}
 
+	creds, err := resolveCredentials(host)
+	if err != nil {
+		return err
+	}
+	_, err = creds.WriteTo(stdout)
+	return err
+}
+
+// resolveCredentials returns a credential for host, preferring an unexpired
+// cached entry and otherwise brokering a fresh one from the control plane and
+// caching it for the next invocation.
+func resolveCredentials(host string) (controlplane.Credentials, error) {
 	cachePath, _ := credCachePath()
 	cache, _ := readCredCache(cachePath)
 	if creds, ok := cache[host]; ok && !credExpired(creds, time.Now()) {
-		_, err := creds.WriteTo(stdout)
-		return err
+		return creds, nil
 	}
 
 	cfg := config.Resolve(config.Flags{})
 	c, err := controlplane.New(cfg.ControlPlaneURL, cfg.AuthToken, cfg.SessionID)
 	if err != nil {
-		return fmt.Errorf("git-credential: %w", err)
+		return controlplane.Credentials{}, fmt.Errorf("git-credential: %w", err)
 	}
 
 	creds, err := c.SCMCredentials(context.Background(), host)
 	if err != nil {
-		return err
+		return controlplane.Credentials{}, err
 	}
 
 	if cachePath != "" {
@@ -81,9 +104,7 @@ func GitCredential(op string, stdin io.Reader, stdout io.Writer) error {
 		cache[host] = creds
 		_ = writeCredCache(cachePath, cache)
 	}
-
-	_, err = creds.WriteTo(stdout)
-	return err
+	return creds, nil
 }
 
 // credExpired reports whether creds are too close to (or past) their expiry to
