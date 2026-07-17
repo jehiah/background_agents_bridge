@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
 
 // The bridge is the single source of truth for OpenCode tools. Each tool is
@@ -67,10 +69,21 @@ func generateToolJS(name, exePath string) (string, error) {
 // defaultRepoDir is the repo path baked into the create-pull-request tool
 // description so the agent knows which checkout the tool is bound to. It mirrors
 // defaultWorkdir in cmd/bridge so it names the same directory opencode was
-// launched in: /workspace/$REPO_NAME when REPO_NAME is set, else /workspace. We
-// do NOT stat the candidate here — install runs early and the clone may not be
-// in place yet; the tool itself re-resolves at call time.
+// launched in.
+//
+// Multi-repo sessions (manifest with more than one repository) resolve to
+// /workspace: the tool spans every checkout there and takes an explicit repo
+// argument, so we must NOT pin the description to a single member. We pivot on
+// the repository count rather than REPO_NAME because REPO_NAME is still set in
+// multi-repo sessions for backwards compatibility. Single-repo sessions use
+// /workspace/$REPO_NAME when REPO_NAME is set, else /workspace.
+//
+// We do NOT stat the candidate here — install runs early and the clone may not
+// be in place yet; the tool itself re-resolves at call time.
 func defaultRepoDir() string {
+	if len(repomanifest.Load(repomanifest.ManifestPath)) > 1 {
+		return workspaceRoot
+	}
 	if repo := os.Getenv("REPO_NAME"); repo != "" {
 		return filepath.Join(workspaceRoot, repo)
 	}

@@ -36,6 +36,17 @@ func argBool(args map[string]any, key string) bool {
 	return b
 }
 
+// argBoolPtr returns a pointer to a bool-valued arg, or nil when the key is
+// absent (or not a bool). Callers use the nil case to omit the field entirely so
+// the control plane falls back to its own default, matching the Python tools
+// which forward `undefined` for unset optional booleans.
+func argBoolPtr(args map[string]any, key string) *bool {
+	if b, ok := args[key].(bool); ok {
+		return &b
+	}
+	return nil
+}
+
 // argInt returns an integer-valued arg (JSON numbers decode as float64).
 func argInt(args map[string]any, key string) int {
 	if v, ok := args[key].(float64); ok {

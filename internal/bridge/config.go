@@ -30,6 +30,11 @@ const (
 
 	wsReadLimit = 32 * 1024 * 1024 // 32 MiB; token/tool-output frames exceed the 32 KiB default.
 
+	// defaultBootWarningsPath is where the supervisor (which has no control-plane
+	// event channel) queues boot warnings; the bridge drains them into `warning`
+	// events after the WebSocket handshake. Mirrors BOOT_WARNINGS_FILE_PATH.
+	defaultBootWarningsPath = "/tmp/oi-boot-warnings.jsonl"
+
 	// sseMaxEventSize bounds a single OpenCode SSE event. go-sse defaults to
 	// 64 KiB, which token/tool-output events routinely exceed.
 	sseMaxEventSize = 32 * 1024 * 1024

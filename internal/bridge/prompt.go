@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -45,6 +46,17 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 		}
 	}
 
+	// Hydrate session image attachments into OpenCode file parts so the agent can
+	// see them. Invalid entries are skipped with a user-facing warning; download
+	// failures drop the individual attachment (also warned) without failing the
+	// prompt.
+	resolved, rejected := parseSessionImageAttachments(cmd.Attachments)
+	if rejected > 0 {
+		b.log.Warn("prompt.invalid_attachments", "message_id", messageID, "rejected_count", rejected)
+		b.sendMediaWarning(fmt.Sprintf("%d invalid attachment(s) were skipped.", rejected))
+	}
+	fileParts := buildFileParts(b.processAttachments(ctx, resolved))
+
 	hadError := false
 	emittedOutput := false
 	var errMsg string
@@ -61,7 +73,7 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 		b.sendEvent(e)
 	}
 
-	err := b.streamOpencodeResponse(ctx, messageID, cmd.Content, model, reasoningEffort, emit)
+	err := b.streamOpencodeResponse(ctx, messageID, cmd.Content, model, reasoningEffort, fileParts, emit)
 	if err != nil {
 		outcome = "error"
 		if ctx.Err() != nil {

@@ -89,6 +89,42 @@ func TestCreatePR(t *testing.T) {
 	}
 }
 
+// TestCreatePRPayloadFields verifies repo identity and an explicit draft flag
+// are forwarded, while an unset draft is omitted so the server applies its
+// default.
+func TestCreatePRPayloadFields(t *testing.T) {
+	draft := true
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		s := string(body)
+		for _, want := range []string{`"repoOwner":"group/sub"`, `"repoName":"world"`, `"draft":true`} {
+			if !strings.Contains(s, want) {
+				t.Errorf("body missing %s: %s", want, s)
+			}
+		}
+		_, _ = w.Write([]byte(`{"prNumber":1,"prUrl":"u","state":"open"}`))
+	})
+	if _, err := c.CreatePR(context.Background(), CreatePRRequest{
+		Title: "T", Body: "B", HeadBranch: "feat",
+		RepoOwner: "group/sub", RepoName: "world", Draft: &draft,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreatePRDraftOmittedWhenUnset(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "draft") {
+			t.Errorf("unset draft should be omitted: %s", body)
+		}
+		_, _ = w.Write([]byte(`{"prNumber":1,"prUrl":"u","state":"open"}`))
+	})
+	if _, err := c.CreatePR(context.Background(), CreatePRRequest{Title: "T", Body: "B"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCreatePRConflict(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)

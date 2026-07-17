@@ -54,6 +54,7 @@ type streamState struct {
 func (b *AgentBridge) streamOpencodeResponse(
 	ctx context.Context,
 	messageID, content, model, reasoningEffort string,
+	fileParts []map[string]any,
 	emit func(event),
 ) error {
 	ocSessionID := b.getOpencodeSessionID()
@@ -65,7 +66,7 @@ func (b *AgentBridge) streamOpencodeResponse(
 	if err != nil {
 		return err
 	}
-	body := buildPromptRequestBody(content, model, ocMsgID, reasoningEffort)
+	body := buildPromptRequestBody(content, model, ocMsgID, reasoningEffort, fileParts)
 
 	s := &streamState{
 		messageID:              messageID,

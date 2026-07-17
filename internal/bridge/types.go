@@ -1,6 +1,9 @@
 package bridge
 
-import "time"
+import (
+	"maps"
+	"time"
+)
 
 // event is an outbound message to the control plane. It is modeled as a plain
 // map so the generic buffering / ACK machinery can treat all events uniformly
@@ -97,17 +100,29 @@ func snapshotReadyEvent(opencodeSessionID string) event {
 	return event{"type": "snapshot_ready", "opencodeSessionId": nullable(opencodeSessionID)}
 }
 
-func pushCompleteEvent(branch string) event {
-	return event{"type": "push_complete", "branchName": branch, "timestamp": nowUnix()}
+// warningEvent forwards a supervisor boot warning drained after the handshake.
+// entry carries at least "message"; any of scope/repoOwner/repoName it holds are
+// preserved verbatim.
+func warningEvent(entry map[string]any) event {
+	e := event{"type": "warning"}
+	maps.Copy(e, entry)
+	return e
 }
 
-// pushErrorEvent builds a push_error. branchName is included only when
-// withBranch is true (the "no repository" case omits it, matching Python).
-func pushErrorEvent(errMsg, branch string, withBranch bool) event {
-	e := event{"type": "push_error", "error": errMsg, "timestamp": nowUnix()}
-	if withBranch {
-		e["branchName"] = branch
-	}
+// pushCompleteEvent builds a push_complete. repoFields echoes repoOwner/repoName
+// when the push spec carried a repo identity (empty otherwise).
+func pushCompleteEvent(branch string, repoFields map[string]any) event {
+	e := event{"type": "push_complete", "branchName": branch, "timestamp": nowUnix()}
+	maps.Copy(e, repoFields)
+	return e
+}
+
+// pushErrorEvent builds a push_error. branchName is always included (even when
+// empty) so the control plane can resolve its pending push instead of leaking
+// it; repoFields echoes repoOwner/repoName when the spec carried them.
+func pushErrorEvent(errMsg, branch string, repoFields map[string]any) event {
+	e := event{"type": "push_error", "error": errMsg, "branchName": branch, "timestamp": nowUnix()}
+	maps.Copy(e, repoFields)
 	return e
 }
 
@@ -125,6 +140,11 @@ type command struct {
 	Author          commandAuthor `json:"author"`
 	PushSpec        *pushSpec     `json:"pushSpec"`
 	AckID           string        `json:"ackId"`
+	// Attachments is the untyped session-image attachment list from the control
+	// plane (validated by parseSessionImageAttachments). Kept as `any` so a
+	// non-list value is a validation reject, not a JSON unmarshal failure,
+	// matching the Python bridge's untyped WebSocket boundary.
+	Attachments any `json:"attachments"`
 }
 
 type commandAuthor struct {
@@ -134,6 +154,8 @@ type commandAuthor struct {
 
 type pushSpec struct {
 	TargetBranch      string `json:"targetBranch"`
+	RepoOwner         string `json:"repoOwner"`
+	RepoName          string `json:"repoName"`
 	Refspec           string `json:"refspec"`
 	RemoteURL         string `json:"remoteUrl"`
 	RedactedRemoteURL string `json:"redactedRemoteUrl"`

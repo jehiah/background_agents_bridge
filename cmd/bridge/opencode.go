@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jehiah/background_agents_bridge/internal/config"
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
 
 // defaultOpencodeConfig is used when OPENCODE_CONFIG_CONTENT is unset: blanket
@@ -17,8 +18,16 @@ import (
 const defaultOpencodeConfig = `{"permission":{"*":"allow"}}`
 
 // defaultWorkdir picks the working directory for opencode when --workdir is
-// not given: /workspace/$REPO_NAME if it exists, otherwise /workspace.
+// not given. Multi-repo sessions (manifest with more than one repository) get
+// /workspace so opencode sits above every checkout; otherwise it is
+// /workspace/$REPO_NAME if it exists, falling back to /workspace.
+//
+// We pivot on the repository count rather than REPO_NAME because REPO_NAME is
+// still set in multi-repo sessions for backwards compatibility.
 func defaultWorkdir() string {
+	if len(repomanifest.Load(repomanifest.ManifestPath)) > 1 {
+		return "/workspace"
+	}
 	if repo := os.Getenv("REPO_NAME"); repo != "" {
 		candidate := "/workspace/" + repo
 		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
