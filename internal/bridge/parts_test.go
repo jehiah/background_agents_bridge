@@ -35,7 +35,7 @@ func TestBuildPromptRequestBody(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			body := buildPromptRequestBody("hi", tc.model, "msg_x", tc.reasoningEffort)
+			body := buildPromptRequestBody("hi", tc.model, "msg_x", tc.reasoningEffort, nil)
 			got, err := json.Marshal(body)
 			if err != nil {
 				t.Fatalf("marshal: %v", err)

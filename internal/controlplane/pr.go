@@ -10,6 +10,9 @@ type CreatePRRequest struct {
 	Body       string
 	BaseBranch string // optional
 	HeadBranch string // optional
+	RepoOwner  string // optional; identifies the target member in multi-repo sessions
+	RepoName   string // optional; identifies the target member in multi-repo sessions
+	Draft      *bool  // optional; nil omits the field so the server applies the repo's draft policy
 }
 
 // PRResult is the control-plane response to a PR creation. On the normal path it
@@ -40,6 +43,15 @@ func (c *Client) CreatePR(ctx context.Context, req CreatePRRequest) (PRResult, e
 	}
 	if req.HeadBranch != "" {
 		payload["headBranch"] = req.HeadBranch
+	}
+	if req.RepoOwner != "" {
+		payload["repoOwner"] = req.RepoOwner
+	}
+	if req.RepoName != "" {
+		payload["repoName"] = req.RepoName
+	}
+	if req.Draft != nil {
+		payload["draft"] = *req.Draft
 	}
 	var out PRResult
 	if err := c.doJSON(ctx, "POST", "/pr", payload, &out); err != nil {

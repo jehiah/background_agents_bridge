@@ -18,6 +18,17 @@ export default tool({
       .string()
       .optional()
       .describe("Target branch to merge into. Defaults to the repository's default branch (usually 'main')."),
+    repo: z
+      .string()
+      .optional()
+      .describe(
+        'Target repository as "owner/name". Required when the session spans multiple ' +
+          "repositories; may be omitted for single-repository sessions."),
+    draft: z
+      .boolean()
+      .optional()
+      .describe(
+        "Open the pull request as a draft. Set to true to open a draft PR, or false for a ready-for-review PR. Note: this may be overridden by policy."),
   },
   async execute(args) {
     return await runBridgeTool("create-pull-request", args);

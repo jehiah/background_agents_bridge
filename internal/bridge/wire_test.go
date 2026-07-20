@@ -55,9 +55,24 @@ func TestEventWireFormat(t *testing.T) {
 			`{"error":"boom","messageId":"m1","success":false,"type":"execution_complete"}`,
 		},
 		{"snapshot_ready", snapshotReadyEvent("ses"), `{"opencodeSessionId":"ses","type":"snapshot_ready"}`},
-		{"push_complete", pushCompleteEvent("b"), `{"branchName":"b","type":"push_complete"}`},
-		{"push_error_branch", pushErrorEvent("err", "b", true), `{"branchName":"b","error":"err","type":"push_error"}`},
-		{"push_error_nobranch", pushErrorEvent("err", "", false), `{"error":"err","type":"push_error"}`},
+		{"push_complete", pushCompleteEvent("b", nil), `{"branchName":"b","type":"push_complete"}`},
+		{
+			"push_complete_repo",
+			pushCompleteEvent("b", map[string]any{"repoOwner": "o", "repoName": "n"}),
+			`{"branchName":"b","repoName":"n","repoOwner":"o","type":"push_complete"}`,
+		},
+		{"push_error_branch", pushErrorEvent("err", "b", nil), `{"branchName":"b","error":"err","type":"push_error"}`},
+		{"push_error_nobranch", pushErrorEvent("err", "", nil), `{"branchName":"","error":"err","type":"push_error"}`},
+		{
+			"push_error_repo",
+			pushErrorEvent("err", "b", map[string]any{"repoOwner": "o", "repoName": "n"}),
+			`{"branchName":"b","error":"err","repoName":"n","repoOwner":"o","type":"push_error"}`,
+		},
+		{
+			"warning",
+			warningEvent(map[string]any{"scope": "repo", "message": "deleted branch", "repoOwner": "o", "repoName": "n"}),
+			`{"message":"deleted branch","repoName":"n","repoOwner":"o","scope":"repo","type":"warning"}`,
+		},
 	}
 
 	for _, tc := range cases {

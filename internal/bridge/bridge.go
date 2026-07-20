@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
 
 // errSessionTerminated is returned when the control plane has terminated the
@@ -45,8 +47,10 @@ type AgentBridge struct {
 	httpClient           *http.Client
 	ids                  *identifier
 
-	sessionIDFile string
-	workspacePath string
+	sessionIDFile    string
+	workspacePath    string
+	repoManifestPath string
+	bootWarningsPath string
 
 	rootCtx context.Context
 	cancel  context.CancelFunc
@@ -72,18 +76,20 @@ type AgentBridge struct {
 // (service, sandbox_id, session_id).
 func New(sandboxID, sessionID, controlPlaneURL, authToken string, opencodePort int, log *slog.Logger) *AgentBridge {
 	b := &AgentBridge{
-		sandboxID:       sandboxID,
-		sessionID:       sessionID,
-		controlPlaneURL: controlPlaneURL,
-		authToken:       authToken,
-		opencodePort:    opencodePort,
-		opencodeBaseURL: fmt.Sprintf("http://127.0.0.1:%d", opencodePort),
-		log:             log,
-		ids:             &identifier{},
-		pendingAcks:     make(map[string]event),
-		sessionIDFile:   filepath.Join(os.TempDir(), "opencode-session-id"),
-		workspacePath:   "/workspace",
-		gitSyncDoneC:    make(chan struct{}),
+		sandboxID:        sandboxID,
+		sessionID:        sessionID,
+		controlPlaneURL:  controlPlaneURL,
+		authToken:        authToken,
+		opencodePort:     opencodePort,
+		opencodeBaseURL:  fmt.Sprintf("http://127.0.0.1:%d", opencodePort),
+		log:              log,
+		ids:              &identifier{},
+		pendingAcks:      make(map[string]event),
+		sessionIDFile:    filepath.Join(os.TempDir(), "opencode-session-id"),
+		workspacePath:    "/workspace",
+		repoManifestPath: repomanifest.ManifestPath,
+		bootWarningsPath: defaultBootWarningsPath,
+		gitSyncDoneC:     make(chan struct{}),
 	}
 	b.sseInactivityTimeout = resolveTimeout(
 		log, "BRIDGE_SSE_INACTIVITY_TIMEOUT",

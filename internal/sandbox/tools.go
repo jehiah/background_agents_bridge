@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/jehiah/background_agents_bridge/internal/config"
 	"github.com/jehiah/background_agents_bridge/internal/controlplane"
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
 
 // toolImpl is the execution side of a tool: the work it does plus an optional
@@ -84,9 +86,81 @@ func apiErr(err error) (*controlplane.APIError, bool) {
 
 // --- create-pull-request -----------------------------------------------------
 
+// prRepoTarget is a create-pull-request target repository resolved from the
+// session manifest (or parsed from the argument when no manifest is present).
+type prRepoTarget struct {
+	owner string
+	name  string
+	path  string // manifest checkout path; "" when parsed without a manifest
+}
+
+// resolveRepositoryTarget resolves an "owner/name" argument, preserving nested
+// owners and the manifest's canonical casing/path. It returns nil when the
+// argument names a repo outside the manifest, or (manifest absent) is not a
+// well-formed "owner/name". Mirrors resolveRepositoryTarget in the upstream
+// inspect-plugin.js: nested owners are supported by splitting on the LAST "/".
+func resolveRepositoryTarget(repo string, repositories []repomanifest.Entry) *prRepoTarget {
+	requested := strings.TrimSpace(repo)
+
+	if len(repositories) > 0 {
+		normalized := strings.ToLower(requested)
+		for _, r := range repositories {
+			if strings.ToLower(r.Owner+"/"+r.Name) == normalized {
+				return &prRepoTarget{owner: r.Owner, name: r.Name, path: r.Path}
+			}
+		}
+		return nil
+	}
+
+	sep := strings.LastIndex(requested, "/")
+	if sep <= 0 || sep == len(requested)-1 {
+		return nil
+	}
+	owner := requested[:sep]
+	name := requested[sep+1:]
+	if slices.Contains(strings.Split(owner, "/"), "") {
+		return nil
+	}
+	return &prRepoTarget{owner: owner, name: name}
+}
+
+// validRepoValues formats the manifest's "owner/name" identities for error
+// messages that list the session's valid repositories.
+func validRepoValues(repositories []repomanifest.Entry) string {
+	vals := make([]string, len(repositories))
+	for i, r := range repositories {
+		vals[i] = r.Owner + "/" + r.Name
+	}
+	return strings.Join(vals, ", ")
+}
+
 func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	baseBranch := argStr(args, "baseBranch")
-	headBranch := currentGitBranch(ctx, resolveRepoDir())
+
+	// Resolve the target repository for multi-repo sessions. repoPath, when set,
+	// pins branch resolution to the member checkout named by the spec.
+	repositories := repomanifest.Load(repomanifest.ManifestPath)
+	var repoOwner, repoName, repoPath string
+	if repoArg := argStr(args, "repo"); repoArg != "" {
+		target := resolveRepositoryTarget(repoArg, repositories)
+		if target == nil && len(repositories) > 0 {
+			return fmt.Sprintf("Failed to create pull request: %s is not part of this session. Valid values: %s.",
+				repoArg, validRepoValues(repositories))
+		}
+		if target == nil {
+			return `Failed to create pull request: repo must be "owner/name".`
+		}
+		repoOwner, repoName, repoPath = target.owner, target.name, target.path
+	} else if len(repositories) > 1 {
+		return fmt.Sprintf("Failed to create pull request: this session spans multiple repositories — pass repo with one of: %s.",
+			validRepoValues(repositories))
+	}
+
+	branchDir := repoPath
+	if branchDir == "" {
+		branchDir = resolveRepoDir()
+	}
+	headBranch := currentGitBranch(ctx, branchDir)
 	if msg := requireFeatureBranch(headBranch, baseBranch); msg != "" {
 		return msg
 	}
@@ -96,6 +170,9 @@ func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]an
 		Body:       orDefault(argStr(args, "body"), "Automated PR created via create-pull-request tool"),
 		BaseBranch: baseBranch,
 		HeadBranch: headBranch,
+		RepoOwner:  repoOwner,
+		RepoName:   repoName,
+		Draft:      argBoolPtr(args, "draft"),
 	}
 
 	result, err := c.CreatePR(ctx, req)

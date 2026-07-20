@@ -112,8 +112,10 @@ func TestFindRepoDirRepoNameMissing(t *testing.T) {
 	}
 }
 
-// TestHandlePushNoRepository verifies the no-repository push_error omits
-// branchName, matching the Python contract.
+// TestHandlePushNoRepository verifies the no-repository push_error now includes
+// branchName (even for a valid spec), so the control plane can resolve its
+// pending push instead of leaking it. Matches the upstream _send_push_error
+// contract.
 func TestHandlePushNoRepository(t *testing.T) {
 	b := testBridge()
 	b.workspacePath = t.TempDir() // no repo inside
@@ -131,7 +133,91 @@ func TestHandlePushNoRepository(t *testing.T) {
 	if e["type"] != "push_error" || e["error"] != "No repository found" {
 		t.Errorf("unexpected event: %+v", e)
 	}
-	if _, hasBranch := e["branchName"]; hasBranch {
-		t.Errorf("no-repository push_error should omit branchName: %+v", e)
+	if e["branchName"] != "feature" {
+		t.Errorf("push_error should carry branchName %q, got %+v", "feature", e)
+	}
+}
+
+// writeManifest writes a repo manifest file and returns its path.
+func writeManifest(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestResolvePushCheckoutMember verifies a spec carrying a repo identity is
+// routed to the manifest member's checkout path (not a spec-derived filesystem
+// path).
+func TestResolvePushCheckoutMember(t *testing.T) {
+	root := t.TempDir()
+	member := filepath.Join(root, "world")
+	if err := os.MkdirAll(filepath.Join(member, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := testBridge()
+	b.repoManifestPath = writeManifest(t, `{"repositories":[
+		{"repo_owner":"group/sub","repo_name":"world","path":"`+member+`"}]}`)
+
+	req := newPushRequest(&pushSpec{
+		TargetBranch: "feat", Refspec: "HEAD:feat", RemoteURL: "https://x/y",
+		RepoOwner: "GROUP/SUB", RepoName: "WORLD", // case-insensitive match
+	})
+	dir, err := b.resolvePushCheckout(req, true)
+	if err != nil {
+		t.Fatalf("unexpected rejection: %v", err)
+	}
+	if dir != member {
+		t.Errorf("checkout = %q, want %q", dir, member)
+	}
+}
+
+// TestResolvePushCheckoutRejections covers the validation and member-resolution
+// failure modes and the reasons they surface.
+func TestResolvePushCheckoutRejections(t *testing.T) {
+	root := t.TempDir()
+	present := filepath.Join(root, "present")
+	if err := os.MkdirAll(filepath.Join(present, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := writeManifest(t, `{"repositories":[
+		{"repo_owner":"o","repo_name":"present","path":"`+present+`"},
+		{"repo_owner":"o","repo_name":"gone","path":"`+filepath.Join(root, "gone")+`"}]}`)
+
+	valid := func() *pushSpec {
+		return &pushSpec{TargetBranch: "feat", Refspec: "HEAD:feat", RemoteURL: "https://x/y"}
+	}
+	cases := []struct {
+		name        string
+		specPresent bool
+		mutate      func(*pushSpec) *pushSpec
+		wantErr     string
+	}{
+		{"missing_push_spec", false, func(*pushSpec) *pushSpec { return nil },
+			"Push failed - missing push specification"},
+		{"partial_identity", true, func(s *pushSpec) *pushSpec { s.RepoOwner = "o"; return s },
+			"Push failed - pushSpec must carry both repoOwner and repoName"},
+		{"missing_branch", true, func(s *pushSpec) *pushSpec { s.TargetBranch = ""; return s },
+			"Push failed - missing target branch"},
+		{"invalid_spec", true, func(s *pushSpec) *pushSpec { s.Refspec = ""; return s },
+			"Push failed - invalid push specification"},
+		{"unknown_member", true, func(s *pushSpec) *pushSpec { s.RepoOwner = "o"; s.RepoName = "nope"; return s },
+			"Repository o/nope is not part of this session"},
+		{"member_missing_checkout", true, func(s *pushSpec) *pushSpec { s.RepoOwner = "o"; s.RepoName = "gone"; return s },
+			"Repository o/gone not found in workspace"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := testBridge()
+			b.repoManifestPath = manifest
+			b.workspacePath = root
+			req := newPushRequest(tc.mutate(valid()))
+			_, err := b.resolvePushCheckout(req, tc.specPresent)
+			if err == nil || err.Error() != tc.wantErr {
+				t.Errorf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }

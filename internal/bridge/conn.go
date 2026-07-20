@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/coder/websocket"
 )
@@ -39,6 +41,7 @@ func (b *AgentBridge) connectAndRun(ctx context.Context) error {
 
 	// Announce readiness, then replay anything buffered/unacked across the gap.
 	b.sendEvent(readyEvent(b.getOpencodeSessionID()))
+	b.drainBootWarnings()
 	justFlushed := b.flushEventBuffer()
 	b.flushPendingAcks(justFlushed)
 
@@ -57,5 +60,40 @@ func (b *AgentBridge) connectAndRun(ctx context.Context) error {
 			continue
 		}
 		b.handleCommand(ctx, &cmd)
+	}
+}
+
+// drainBootWarnings forwards supervisor boot warnings queued before the bridge
+// existed. The supervisor appends {scope, message, repoOwner?, repoName?} JSON
+// lines (see bootWarningsPath); each becomes a `warning` sandbox event. The file
+// is consumed exactly once — reconnects must not replay it. Mirrors
+// _drain_boot_warnings.
+func (b *AgentBridge) drainBootWarnings() {
+	raw, err := os.ReadFile(b.bootWarningsPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			b.log.Warn("bridge.boot_warnings_read_failed", "exc", err)
+		}
+		return
+	}
+	// Consume exactly once, before parsing, so a malformed file cannot replay.
+	if err := os.Remove(b.bootWarningsPath); err != nil && !os.IsNotExist(err) {
+		b.log.Warn("bridge.boot_warnings_read_failed", "exc", err)
+		return
+	}
+
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if msg, ok := entry["message"].(string); !ok || msg == "" {
+			continue
+		}
+		b.sendEvent(warningEvent(entry))
 	}
 }

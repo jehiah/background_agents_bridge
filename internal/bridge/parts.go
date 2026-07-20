@@ -28,10 +28,13 @@ var anthropicAdaptiveEfforts = map[string]bool{
 // buildPromptRequestBody builds the OpenCode prompt_async request body. The
 // shape (parts/messageID/model.options) matches the Python bridge exactly so
 // OpenCode treats requests identically.
-func buildPromptRequestBody(content, model, opencodeMessageID, reasoningEffort string) map[string]any {
-	body := map[string]any{
-		"parts": []any{map[string]any{"type": "text", "text": content}},
+func buildPromptRequestBody(content, model, opencodeMessageID, reasoningEffort string, fileParts []map[string]any) map[string]any {
+	parts := make([]any, 0, 1+len(fileParts))
+	parts = append(parts, map[string]any{"type": "text", "text": content})
+	for _, fp := range fileParts {
+		parts = append(parts, fp)
 	}
+	body := map[string]any{"parts": parts}
 	if opencodeMessageID != "" {
 		body["messageID"] = opencodeMessageID
 	}
