@@ -60,6 +60,24 @@ func TestGenerateToolJS(t *testing.T) {
 	}
 }
 
+// TestSpawnChildDescriptionExcludesSubtasks guards the wording that keeps the
+// model from reading "sub-agent"/"sub-task" — in-process task delegation — as a
+// request for a child session in its own sandbox.
+func TestSpawnChildDescriptionExcludesSubtasks(t *testing.T) {
+	js, err := generateToolJS("spawn-child", "/bin/bridge")
+	if err != nil {
+		t.Fatalf("generateToolJS: %v", err)
+	}
+	for _, want := range []string{
+		"'sub-agent', 'subagent', 'sub-task', or 'subtask'",
+		"in-process task delegation",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("spawn-child description missing %q\n---\n%s", want, js)
+		}
+	}
+}
+
 func TestGenerateToolJSAllTools(t *testing.T) {
 	// Every fragment must render and carry its name and the bridge bin.
 	for _, name := range toolDefNames() {
