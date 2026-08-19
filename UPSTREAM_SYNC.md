@@ -114,11 +114,13 @@ between still need review):
 
 | `07264052` Allow multiple pull requests per session, one per head branch (#1434) | **Ported** — the guard change itself is control-plane (`pull-request-service.ts`); the sandbox side is the contract the agent sees. `PRResult` now carries `headBranch`/`baseBranch`/`updated`, and `prSuccessMessage` reports the resolved pair (`PR #12 (feature-x -> main)`) and says "updated with your latest commits" when an existing open PR on that head was reused. The 409 hint drops the misleading "A PR may already exist for this branch." for the actionable new-branch instruction, and the tool description plus `baseBranch` describe state the rule (same branch updates, `git checkout -b` opens another, pass the previous head as `baseBranch` to stack). Not ported: the matching `repository_boot.py` prose, which is the multi-repo `AGENTS.md` written by the un-ported boot orchestrator. |
 
+| `41bc4ca6` Extract supervisor process handlers (#1443) | Excluded — a behaviour-preserving decomposition of `supervisor.py`, the process manager this port does not implement: per-service restart handling moves into handler objects, with restart limits, backoff, error reporting and shutdown unchanged. Nothing touches the bridge or the tools. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `07264052`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `41bc4ca6`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
