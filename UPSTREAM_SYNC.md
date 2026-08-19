@@ -14,21 +14,13 @@ paths are relevant:
 ## In sync through
 
 ```
-5308371d17089dfee46e3eb804d231072ae93983
-feat(slack): attach generated media to completion threads (#1022)
-2026-07-16
+2dc3d7beaec8df64f475ca7945b6ff25f8388a58
+fix: bound repository clone and fetch during startup (#1510)
+2026-08-18
 ```
 
 All upstream changes to the relevant paths **at or before** this commit have
 been reflected in (or deliberately excluded from) this Go port.
-
-> **This port is out of sync.** Roughly 56 upstream commits touch the relevant
-> paths after `5308371d`, and features are being ported out of order as they are
-> needed (see *Reviewed ahead of the sync point*) — most recently the durable
-> session diff viewer (`4df9a705` and its follow-ups) and managed skills
-> (`97f6aeb8`/`b8c757b2`), both ahead of the sync point. Treat the hash
-> above as the last *exhaustive* review, not as the port's feature level. A
-> follow-up pass will walk the intervening commits and re-sync the rest.
 
 ## Reviewed commits
 
@@ -54,11 +46,11 @@ Commits since the previous sync point (`7c0a3ab`), with disposition:
 | `5f5d54fb` portable session image attachments (#1019) | **Ported** — see `internal/bridge/attachments.go` (was ported ahead of the sync point). |
 | `5308371d` slack: attach generated media to completion threads (#1022) | Excluded — sandbox-runtime scope is one prose file, `skills/upload-screenshot/SKILL.md` (broadened from screenshots to generated charts/diagrams). This port does not ship the bundled skill docs; `internal/skills` only scans the image's skills tree for name collisions. The tool itself (`image-upload`) is unchanged, and the rest of the commit is slack-bot / Cloudflare Queue work. |
 
-### Reviewed ahead of the sync point
+### Reviewed after `5308371d`
 
-These landed upstream **after** `5308371d` but were dispositioned out of order
-(so the "in sync through" hash above is not yet bumped past them — the commits
-between still need review):
+The walk from `5308371d` to `2dc3d7be` is complete. The first few rows below
+were dispositioned out of order, ahead of the rest of the walk, because the
+features were needed; everything after them is in upstream order.
 
 | Upstream | Disposition |
 | -------- | ----------- |
@@ -130,11 +122,10 @@ between still need review):
 
 | `2dc3d7be` Bound repository clone and fetch during startup (#1510) | Excluded — entirely `repository_sync.py` and `repository_boot.py`, the boot orchestrator this port does not implement (see the divergence note). It gives startup `git clone`/`git fetch` injectable timeouts (300s/120s), kills the process group on timeout, and turns the sync result's flat failure list into per-repository outcomes so a timeout can be reported by name — fatal in fresh/build mode, a warning when restoring a snapshot or booting a repository image. Nothing here clones or fetches; the bridge attaches to a workspace the orchestrator has already prepared. |
 
-### Pending review (after `5308371d`, not yet ported)
+### Not on the mainline
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `2dc3d7be`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
@@ -143,7 +134,7 @@ To list upstream commits touching the relevant paths since the synced commit:
 
 ```sh
 git -C ../background-agents log --reverse --oneline \
-  7c0a3abb393e26d52f5f0e8c843a307961ac0d16..HEAD -- \
+  2dc3d7beaec8df64f475ca7945b6ff25f8388a58..HEAD -- \
   packages/sandbox-runtime/src/sandbox_runtime \
   packages/sandbox-runtime/tests
 ```
