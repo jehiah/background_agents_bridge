@@ -170,8 +170,20 @@ type command struct {
 }
 
 type commandAuthor struct {
-	SCMName  string `json:"scmName"`
-	SCMEmail string `json:"scmEmail"`
+	// GitIdentity is the control plane's explicit attribution mode. Older
+	// control planes omit it and send scmName/scmEmail instead.
+	GitIdentity *gitIdentity `json:"gitIdentity"`
+	SCMName     string       `json:"scmName"`
+	SCMEmail    string       `json:"scmEmail"`
+}
+
+// gitIdentity is the prompt's commit attribution: mode "agent-only" (no
+// user to attribute to) or "attributed-user" with the trusted GitHub
+// user's name and email.
+type gitIdentity struct {
+	Mode  string `json:"mode"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 type pushSpec struct {

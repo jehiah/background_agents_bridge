@@ -221,3 +221,83 @@ func TestResolvePushCheckoutRejections(t *testing.T) {
 		})
 	}
 }
+
+func TestPromptGitAuthor(t *testing.T) {
+	user := func(name, email string) *GitUser { return &GitUser{Name: name, Email: email} }
+	cases := []struct {
+		name    string
+		author  commandAuthor
+		want    *GitUser
+		wantErr bool
+	}{
+		{
+			"attributed_user",
+			commandAuthor{GitIdentity: &gitIdentity{Mode: "attributed-user", Name: " Jane ", Email: " jane@example.com "}},
+			user("Jane", "jane@example.com"), false,
+		},
+		// Agent-only is a nil author, not the fallback identity: the caller
+		// decides what an unattributed commit is committed as.
+		{"agent_only", commandAuthor{GitIdentity: &gitIdentity{Mode: "agent-only"}}, nil, false},
+		{"unknown_mode", commandAuthor{GitIdentity: &gitIdentity{Mode: "whatever"}}, nil, true},
+		{"empty_mode", commandAuthor{GitIdentity: &gitIdentity{}}, nil, true},
+		{
+			"attributed_user_missing_email",
+			commandAuthor{GitIdentity: &gitIdentity{Mode: "attributed-user", Name: "Jane"}},
+			nil, true,
+		},
+		{
+			"attributed_user_blank_name",
+			commandAuthor{GitIdentity: &gitIdentity{Mode: "attributed-user", Name: "  ", Email: "jane@example.com"}},
+			nil, true,
+		},
+		// A control plane that predates #1030 sends the legacy pair.
+		{
+			"legacy_scm_fields",
+			commandAuthor{SCMName: "Jane", SCMEmail: "jane@example.com"},
+			user("Jane", "jane@example.com"), false,
+		},
+		{
+			"legacy_partial",
+			commandAuthor{SCMName: "Jane"},
+			user("Jane", fallbackGitUser.Email), false,
+		},
+		{"no_author", commandAuthor{}, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := promptGitAuthor(tc.author)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want an error, got %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("promptGitAuthor: %v", err)
+			}
+			switch {
+			case tc.want == nil && got != nil:
+				t.Errorf("author = %+v, want nil", got)
+			case tc.want != nil && (got == nil || *got != *tc.want):
+				t.Errorf("author = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfigureGitIdentityWritesGlobalConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	b := testBridge()
+
+	// Agent-only prompts still need an identity, or git refuses to commit.
+	b.configureGitIdentity(t.Context(), nil)
+	if got := gitInDir(t, home, "config", "--global", "user.name"); got != fallbackGitUser.Name {
+		t.Errorf("user.name = %q, want %q", got, fallbackGitUser.Name)
+	}
+
+	b.configureGitIdentity(t.Context(), &GitUser{Name: "Jane", Email: "jane@example.com"})
+	if got := gitInDir(t, home, "config", "--global", "user.email"); got != "jane@example.com" {
+		t.Errorf("user.email = %q", got)
+	}
+}

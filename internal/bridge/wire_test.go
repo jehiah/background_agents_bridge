@@ -110,6 +110,23 @@ func TestCommandUnmarshal(t *testing.T) {
 	if cmd.Author.SCMName != "Jane" || cmd.Author.SCMEmail != "jane@example.com" {
 		t.Errorf("author: %+v", cmd.Author)
 	}
+	if cmd.Author.GitIdentity != nil {
+		t.Errorf("gitIdentity: %+v, want nil for a legacy author", cmd.Author.GitIdentity)
+	}
+}
+
+func TestCommandUnmarshalGitIdentity(t *testing.T) {
+	raw := `{"type":"prompt","messageId":"m1","content":"hello","author":{"gitIdentity":
+		{"mode":"attributed-user","name":"Jane","email":"jane@example.com"}}}`
+	var cmd command
+	if err := json.Unmarshal([]byte(raw), &cmd); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	identity := cmd.Author.GitIdentity
+	if identity == nil || identity.Mode != "attributed-user" ||
+		identity.Name != "Jane" || identity.Email != "jane@example.com" {
+		t.Errorf("gitIdentity: %+v", identity)
+	}
 }
 
 func TestCommandMsgIDFallback(t *testing.T) {

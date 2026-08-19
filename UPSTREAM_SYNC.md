@@ -67,6 +67,7 @@ between still need review):
 | `01a77eda` extract `BufferedEventForwarder` from the bridge (#1058) | Excluded — a behavior-preserving Python refactor (send/buffer/flush/ack machinery moves from `bridge.py` into `event_forwarder.py`; log names, ack-id scheme, eviction policy and the 1000-event cap all unchanged). The Go port already has that seam in `internal/bridge/send.go`, covered by `send_test.go`. It stays a file rather than a type because the buffer shares `b.mu` with the connection — coder/websocket permits a single writer, so giving the forwarder its own lock would be a regression. |
 | `d7955427` extract `OpenCodePromptStream` from the bridge (#1060) | Excluded — the same kind of behavior-preserving Python refactor: the 544-line `_stream_opencode_response_sse` and its helpers move into `prompt_stream.py`, the two nested closures become methods over a per-call `_PromptState`, and the thinking-budget / pending-part / default-title constants become module `Final`s. Nothing about the wire, the log names or the timeouts changes. The Go port never had the god-method — the same decomposition already exists as `internal/bridge/stream.go` plus `parts.go`, `attachments.go`, `opencode.go`, `identifier.go` and `prompt.go`, with per-prompt state in a function-local `streamState` and the cross-prompt session-title dedupe on the bridge (`lastForwardedSessionTitle`), matching upstream's instance-level scope. |
 | `2914de18` extract `OpenCodeClient` from the prompt stream (#1062) | Excluded — the transport/translator split promised in the #1060 review, again with no wire or behavior change: `opencode_client.py` takes the base URL, `open_event_stream`, `post_prompt`, `request_stop`, `get_messages` and `parse_sse_stream`, `opencode_identifier.py` takes `OpenCodeIdentifier`, and the stream keeps the state machine, reconciliation, title dedupe, request-body construction and the prompt-lifecycle timeouts. The Go port already draws that boundary: `internal/bridge/opencode.go` (`opencodeGet`, `createOpencodeSession`, `opencodeSessionExists`, `requestOpencodeStop`, `listMessages`) is the transport, `identifier.go` is the standalone ID module, and `stream.go` is the translator, with the inactivity deadline stream-side as upstream now has it. Two seams sit differently by design: `postPrompt` stays in `stream.go`, and SSE framing is `tmaxmax/go-sse` so there is no `parse_sse_stream` to relocate. |
+| `cd377d60` delegated commit signing with user attribution (#1030) | **Partially ported.** The prompt attribution half is in: `commandAuthor.gitIdentity` with `agent-only` / `attributed-user` modes (`promptGitAuthor` in `internal/bridge/git.go`), an unparseable identity failing the prompt with upstream's `Invalid prompt Git identity`, and the identity written with `git config --global` (see the divergence notes for that and for the legacy `scmName`/`scmEmail` fallback). The signing half — `git_signing.py`'s config fetch and per-repository `gpg.*`/`commit.gpgsign` install, and the `oi-git-sign` control-plane signer (`git_signer.py`) — is not ported yet. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
@@ -142,6 +143,19 @@ the newest reviewed commit and note any deliberate divergences below.
   from git with per-invalid-byte U+FFFD replacement, matching Python's
   `errors="replace"`, so the two ports agree on patch content and length for
   valid UTF-8.
+- **Git identity is written with `git config --global`**, not `--local` per
+  member checkout. Upstream loops over the manifest checkouts (#899, and again
+  in `git_signing.py`), but the identity is session-wide, nothing in this
+  sandbox writes a local `user.name`/`user.email` that could shadow the global
+  value, and the global one also covers repositories the agent clones or creates
+  outside the manifest. It matches how `install` already configures
+  `credential.helper`. One write per key replaces two per checkout, and the
+  "repository is unavailable for Git configuration" error path disappears.
+- **An absent `author.gitIdentity` falls back to the legacy `scmName`/`scmEmail`
+  pair.** Upstream #1030 made the explicit mode mandatory and raises on anything
+  else. This port keeps accepting the pre-#1030 shape so it still works against
+  a control plane that has not shipped the change; a `gitIdentity` that *is*
+  present but unparseable fails the prompt exactly as upstream does.
 - **`create-pull-request` description** still names `__BRIDGE_DEFAULT_REPO_DIR__`
   (the primary checkout), whereas upstream dropped the path from the description.
   Kept as a Go-port-specific hint; the `repo` arg overrides it for multi-repo

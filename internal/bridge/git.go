@@ -46,59 +46,80 @@ func (b *AgentBridge) findRepoDir() (string, bool) {
 	return "", false
 }
 
-// configureGitIdentity sets git user.name/user.email for commit attribution in
-// every member checkout under the workspace (git config --local per checkout,
-// matching the multi-repo upstream). Failures are logged but not fatal.
-func (b *AgentBridge) configureGitIdentity(ctx context.Context, user GitUser) {
-	b.log.Debug("git.identity_configure", "git_name", user.Name, "git_email", user.Email)
-
-	repoDirs := b.memberCheckouts()
-	if len(repoDirs) == 0 {
-		b.log.Debug("git.identity_skip", "reason", "no_repo_configured")
-		return
+// configureGitIdentity sets git user.name/user.email for commit attribution. A
+// nil user is agent-only attribution, which commits under fallbackGitUser.
+// Failures are logged but not fatal.
+//
+// Upstream writes the identity into every member checkout with
+// `git config --local`; this port writes it once with `--global` (see
+// UPSTREAM_SYNC.md). The identity is session-wide, nothing in the sandbox
+// writes a local identity that could shadow it, and the global value also
+// covers repositories the agent clones or creates outside the manifest.
+func (b *AgentBridge) configureGitIdentity(ctx context.Context, user *GitUser) {
+	effective := fallbackGitUser
+	if user != nil {
+		effective = *user
 	}
+	b.log.Debug("git.identity_configure", "git_name", effective.Name, "git_email", effective.Email)
 
-	run := func(dir string, args ...string) error {
+	run := func(key, value string) error {
 		cctx, cancel := context.WithTimeout(ctx, gitConfigTimeout)
 		defer cancel()
-		c := exec.CommandContext(cctx, "git", append([]string{"config", "--local"}, args...)...)
-		c.Dir = dir
+		c := exec.CommandContext(cctx, "git", "config", "--global", key, value)
 		var stderr bytes.Buffer
 		c.Stderr = &stderr
-		return c.Run()
-	}
-
-	for _, dir := range repoDirs {
-		if err := run(dir, "user.name", user.Name); err != nil {
-			b.log.Error("git.identity_error", "exc", err)
-			return
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("git config --global %s: %w: %s", key, err, strings.TrimSpace(stderr.String()))
 		}
-		if err := run(dir, "user.email", user.Email); err != nil {
-			b.log.Error("git.identity_error", "exc", err)
-			return
-		}
-	}
-}
-
-// memberCheckouts lists every checkout directory (parent of a "*/.git" entry)
-// under the workspace, sorted for determinism. Mirrors the Python
-// repo_path.glob("*/.git") enumeration used for per-repo identity config.
-func (b *AgentBridge) memberCheckouts() []string {
-	entries, err := os.ReadDir(b.workspacePath)
-	if err != nil {
 		return nil
 	}
-	var dirs []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(b.workspacePath, e.Name(), ".git")); err == nil {
-			dirs = append(dirs, filepath.Join(b.workspacePath, e.Name()))
+
+	if err := run("user.name", effective.Name); err != nil {
+		b.log.Error("git.identity_error", "exc", err)
+		return
+	}
+	if err := run("user.email", effective.Email); err != nil {
+		b.log.Error("git.identity_error", "exc", err)
+	}
+}
+
+// promptGitAuthor resolves the commit author a prompt asks for. The control
+// plane states the mode explicitly (#1030): "agent-only" returns nil, so
+// commits are attributed to the agent, and "attributed-user" carries the
+// trusted GitHub user's name and email. An identity that is present but
+// unparseable is an error rather than a silent fallback — committing under the
+// wrong name is worse than refusing the prompt.
+//
+// Older control planes omit gitIdentity and send scmName/scmEmail instead; that
+// legacy shape is still accepted so this port keeps working against them.
+func promptGitAuthor(author commandAuthor) (*GitUser, error) {
+	if identity := author.GitIdentity; identity != nil {
+		switch identity.Mode {
+		case "agent-only":
+			return nil, nil
+		case "attributed-user":
+			name := strings.TrimSpace(identity.Name)
+			email := strings.TrimSpace(identity.Email)
+			if name == "" || email == "" {
+				return nil, errInvalidGitIdentity
+			}
+			return &GitUser{Name: name, Email: email}, nil
+		default:
+			return nil, errInvalidGitIdentity
 		}
 	}
-	return dirs
+	if author.SCMName == "" && author.SCMEmail == "" {
+		return nil, nil
+	}
+	return &GitUser{
+		Name:  orDefault(author.SCMName, fallbackGitUser.Name),
+		Email: orDefault(author.SCMEmail, fallbackGitUser.Email),
+	}, nil
 }
+
+// errInvalidGitIdentity matches the upstream message so the control plane sees
+// the same execution_complete error text from either runtime.
+var errInvalidGitIdentity = errors.New("Invalid prompt Git identity") //nolint:staticcheck // ST1005: wire-compatible message
 
 // pushRequest is a provider-generated push spec normalized for execution.
 // Absent string fields normalize to ""; validatePushRequest decides which are

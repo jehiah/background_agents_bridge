@@ -31,11 +31,15 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 		)
 	}()
 
-	// Attribute commits to the prompt author, falling back to the default.
-	b.configureGitIdentity(ctx, GitUser{
-		Name:  orDefault(cmd.Author.SCMName, fallbackGitUser.Name),
-		Email: orDefault(cmd.Author.SCMEmail, fallbackGitUser.Email),
-	})
+	// Attribute commits to the prompt author, falling back to the agent.
+	author, err := promptGitAuthor(cmd.Author)
+	if err != nil {
+		outcome = "error"
+		b.log.Error("prompt.error", "exc", err, "message_id", messageID)
+		b.sendEvent(executionCompleteEvent(messageID, false, err.Error()))
+		return nil
+	}
+	b.configureGitIdentity(ctx, author)
 
 	if b.getOpencodeSessionID() == "" {
 		if err := b.createOpencodeSession(ctx); err != nil {
@@ -73,8 +77,7 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 		b.sendEvent(e)
 	}
 
-	err := b.streamOpencodeResponse(ctx, messageID, cmd.Content, model, reasoningEffort, fileParts, emit)
-	if err != nil {
+	if err := b.streamOpencodeResponse(ctx, messageID, cmd.Content, model, reasoningEffort, fileParts, emit); err != nil {
 		outcome = "error"
 		if ctx.Err() != nil {
 			return ctx.Err() // cancelled: startPrompt emits the completion
