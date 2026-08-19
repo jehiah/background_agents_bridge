@@ -22,6 +22,13 @@ feat: PR request draft mode setting
 All upstream changes to the relevant paths **at or before** this commit have
 been reflected in (or deliberately excluded from) this Go port.
 
+> **This port is out of sync.** Roughly 60 upstream commits touch the relevant
+> paths after `80f986bc`, and features are being ported out of order as they are
+> needed (see *Ported ahead of the sync point*) — most recently managed skills
+> (`97f6aeb8`/`b8c757b2`), which is far ahead of the sync point. Treat the hash
+> above as the last *exhaustive* review, not as the port's feature level. A
+> follow-up pass will walk the intervening commits and re-sync the rest.
+
 ## Reviewed commits
 
 Commits since the previous sync point (`7c0a3ab`), with disposition:
@@ -51,6 +58,7 @@ still need review):
 | Upstream | Disposition |
 | -------- | ----------- |
 | `5f5d54fb` portable session image attachments (#1019) | **Ported.** `internal/bridge/attachments.go` parses `cmd.attachments`, hydrates images from `GET /sessions/{id}/attachments/{id}` (bearer auth, ≤6/msg, ≤10 MiB, no-redirect, concurrency 2) and appends OpenCode `file` parts after the text part; invalid/failed items surface a `warning`/`media` event. |
+| `97f6aeb8` managed skills (#1449) + `b8c757b2` managed-skills rollout cleanup (#1459) | **Ported.** `internal/skills` is a port of `managed_skills.py` at upstream HEAD (both commits folded together): fetch (bearer, session-scoped URL, 3 attempts, 15 s, 32 MiB cap), local re-validation of the installation DTO, discovery-root name-collision scan, and the journalled same-filesystem swap install with `0400`/`0500` modes. Wired into `bridge run-opencode` (see the divergence note below), which is this port's stand-in for the supervisor step `await self.managed_skills.materialize(...)`. |
 
 ### Pending review (after `80f986bc`, not yet ported)
 
@@ -86,6 +94,18 @@ the newest reviewed commit and note any deliberate divergences below.
   boot-warnings drain are therefore inert until a supervisor (Go or otherwise)
   produces those files. The consumers are wired and tested so they light up as
   soon as the files appear.
+- **Managed skills run from `bridge run-opencode`**, not from a supervisor.
+  Upstream composes the materializer in `entrypoint.build_supervisor` and calls
+  `materialize(boot_result.repositories, boot_result.workdir)` after repository
+  boot; the Go port has no boot orchestrator, so `run-opencode` — the only mode
+  that owns the opencode process lifecycle — does it just before launching
+  opencode, using the repo manifest for the repository list and its resolved
+  `--workdir`. Two consequences: `connect-opencode` alone never materializes
+  (whatever starts opencode there must have installed the tree already), and the
+  collision scan sees only the checkouts the manifest lists, so it is as complete
+  as the manifest is. Skip/fatal semantics match upstream: no
+  `CONTROL_PLANE_URL`/session id means skip, any other failure aborts before
+  opencode starts.
 - **`create-pull-request` description** still names `__BRIDGE_DEFAULT_REPO_DIR__`
   (the primary checkout), whereas upstream dropped the path from the description.
   Kept as a Go-port-specific hint; the `repo` arg overrides it for multi-repo

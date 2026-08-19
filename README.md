@@ -78,6 +78,17 @@ is read from the `OPENCODE_CONFIG_CONTENT` env var; if unset, a default of
 sandboxed VM. The bridge polls 127.0.0.1:`<opencode-port>` for up to
 `--opencode-wait` seconds (default 30) before dialing the control plane.
 
+Before opencode starts, this mode installs the session's **managed skills**: it
+fetches the control plane's session-bound skill set, re-validates it locally
+(paths, sizes, SHA-256s, names, modes), rejects names that would collide with
+skills discovered in the image, the checkouts, the workdir, or `$HOME`, and swaps
+the verified tree into `<opencode global config dir>/skills` atomically. The
+destination follows OpenCode's own rules: `$OPENCODE_CONFIG_DIR`, else
+`$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`. With no
+`CONTROL_PLANE_URL` or session id the step is skipped; any other failure aborts
+the boot rather than start opencode against an unverified skills tree. Skills are
+installed once per boot — opencode restarts reuse the tree.
+
 The short-lived modes (`git-credential`, `tool`) are spawned by git and OpenCode
 rather than run by hand; they resolve their configuration from the inherited
 environment (`CONTROL_PLANE_URL`, `SANDBOX_AUTH_TOKEN`, `SESSION_ID` /
@@ -147,6 +158,9 @@ gcloud compute instances create bridge-vm \
   credential helper and OpenCode tool files.
 - `internal/bridge` — the `connect-opencode`-mode WebSocket bridge (reconnect loop,
   heartbeat, event forwarding, command handling, git identity + push).
+- `internal/skills` — control-plane-managed OpenCode skills: fetch, local
+  validation of the untrusted installation document, discovery-root collision
+  checks, and the journalled atomic install (`run-opencode` boot step).
 
 ## Design notes
 

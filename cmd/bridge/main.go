@@ -7,9 +7,11 @@
 //	                                    git-credential and tool helpers below and
 //	                                    waits for the opencode TCP port to accept
 //	                                    connections before dialing the bridge
-//	bridge run-opencode [flags]         run `opencode serve` as a subprocess and
-//	                                    then chain into connect-opencode so a
-//	                                    single command supervises both
+//	bridge run-opencode [flags]         install the session's control-plane
+//	                                    managed skills, run `opencode serve` as a
+//	                                    subprocess, and then chain into
+//	                                    connect-opencode so a single command
+//	                                    supervises both
 //	bridge git-credential <get|...>     git credential helper (brokers SCM tokens)
 //	bridge tool <name>                  execute one OpenCode tool (args JSON on
 //	                                    stdin, result on stdout)
@@ -37,6 +39,7 @@ import (
 
 	"github.com/jehiah/background_agents_bridge/internal/config"
 	"github.com/jehiah/background_agents_bridge/internal/sandbox"
+	"github.com/jehiah/background_agents_bridge/internal/skills"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -122,6 +125,17 @@ func runRunOpencode(argv []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Managed skills are boot work: install them before opencode starts so it
+	// discovers the complete tree, and fail the boot rather than run against a
+	// tree we could not verify.
+	skillsLog := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()})).With(
+		"service", "sandbox", "component", "managed_skills", "session_id", cfg.SessionID,
+	)
+	if err := materializeManagedSkills(ctx, cfg, workDir, skillsLog); err != nil {
+		skillsLog.Error("managed_skills.failed", "exc", err, "code", skills.ErrorCode(err))
+		os.Exit(1)
+	}
 
 	// errgroup cancels its context as soon as either side returns (with or
 	// without an error), so the survivor unwinds promptly. Wait() returns the
