@@ -126,11 +126,13 @@ between still need review):
 
 | `f61ee535` Reduce Fluxbox log noise (#1499) | Excluded — `browser_desktop.py` forwards the Fluxbox child's output at debug instead of info, leaving the other desktop components and the `vnc.*` lifecycle signals at info. This port runs no browser desktop; the module is part of the un-ported supervisor. |
 
+| `890a0bdc` Bound shared Slack API requests and pagination (#1507) | **Ported** (sandbox-runtime scope) — the timeouts and pagination caps are control-plane; in scope is the new `delivery_unknown` entry in `slackReasonGuidance`. Without it `runSlackNotify` remaps the reason to `slack_api_error`, whose guidance says the post did not go through — the opposite of what a timed-out confirmation means, and an invitation to post twice. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `f61ee535`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `890a0bdc`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

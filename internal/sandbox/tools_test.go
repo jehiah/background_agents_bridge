@@ -344,6 +344,31 @@ func TestRunSlackNotifyRateLimited(t *testing.T) {
 	}
 }
 
+// TestRunSlackNotifyDeliveryUnknown verifies a timed-out confirmation keeps its
+// own reason. Flattened into slack_api_error it would read as "the post did not
+// go through", and the agent would retry a notification Slack may have posted.
+func TestRunSlackNotifyDeliveryUnknown(t *testing.T) {
+	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusGatewayTimeout)
+		_, _ = w.Write([]byte(`{"error":"delivery_unknown"}`))
+	})
+	got := runSlackNotify(context.Background(), c, map[string]any{"channel": "ops", "text": "hi"})
+	var env map[string]any
+	if err := json.Unmarshal([]byte(got), &env); err != nil {
+		t.Fatalf("not JSON: %q", got)
+	}
+	if env["reason"] != "delivery_unknown" {
+		t.Fatalf("reason = %v, want delivery_unknown", env["reason"])
+	}
+	message, _ := env["agentMessage"].(string)
+	if !strings.Contains(message, "Do not retry automatically") {
+		t.Errorf("agentMessage = %q, want the do-not-retry guidance", message)
+	}
+	if strings.Contains(message, "did not go through") {
+		t.Errorf("agentMessage = %q, want no claim that the post failed", message)
+	}
+}
+
 func TestRunSlackNotifyUnknownReasonFallsBack(t *testing.T) {
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
