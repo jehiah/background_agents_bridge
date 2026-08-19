@@ -64,6 +64,44 @@ func TestRunCreatePRDraftState(t *testing.T) {
 	}
 }
 
+// TestRunCreatePRReportsBranches verifies the resolved head/base pair reaches
+// the agent, so branch resolution is never silent — an omitted baseBranch falls
+// back to the session's, which the agent otherwise could not see.
+func TestRunCreatePRReportsBranches(t *testing.T) {
+	stubBranch(t, "feature/x")
+	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(
+			`{"prNumber":42,"prUrl":"https://x/pr/42","headBranch":"feature/x","baseBranch":"main"}`))
+	})
+	got := runCreatePR(context.Background(), c, map[string]any{"title": "T", "body": "B"})
+	if !strings.Contains(got, "PR #42 (feature/x -> main): https://x/pr/42") {
+		t.Fatalf("got %q", got)
+	}
+	if !strings.Contains(got, "created successfully") {
+		t.Errorf("expected a creation message, got %q", got)
+	}
+}
+
+// TestRunCreatePRUpdatesExisting verifies a second call from the same branch is
+// reported as an update of that branch's open PR rather than as a new one.
+func TestRunCreatePRUpdatesExisting(t *testing.T) {
+	stubBranch(t, "feature/x")
+	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(
+			`{"prNumber":42,"prUrl":"https://x/pr/42","headBranch":"feature/x","baseBranch":"main","updated":true}`))
+	})
+	got := runCreatePR(context.Background(), c, map[string]any{"title": "T", "body": "B"})
+	if !strings.Contains(got, "Pull request updated with your latest commits.") {
+		t.Fatalf("got %q", got)
+	}
+	if !strings.Contains(got, "PR #42 (feature/x -> main): https://x/pr/42") {
+		t.Errorf("branches missing: %q", got)
+	}
+	if strings.Contains(got, "created successfully") {
+		t.Errorf("reused PR reported as created: %q", got)
+	}
+}
+
 func TestRunCreatePRManual(t *testing.T) {
 	stubBranch(t, "feature/x")
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -84,6 +122,11 @@ func TestRunCreatePRConflict(t *testing.T) {
 	got := runCreatePR(context.Background(), c, map[string]any{"title": "T", "body": "B"})
 	if !strings.Contains(got, "Conflict: exists") {
 		t.Fatalf("got %q", got)
+	}
+	// The hint has to be actionable: a conflict now means this branch already
+	// has an open PR, and another one needs another branch.
+	if !strings.Contains(got, "create a new branch (`git checkout -b`)") {
+		t.Errorf("conflict hint missing the new-branch instruction: %q", got)
 	}
 }
 

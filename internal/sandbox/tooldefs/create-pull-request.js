@@ -6,7 +6,10 @@ export default tool({
     "It handles git push and PR creation automatically with pre-configured authentication. Before committing, make " +
     "sure you are on a dedicated feature branch (e.g. `git checkout -b feature/short-description`); do NOT commit on " +
     "the base branch (main/master) or a detached HEAD, or PR creation will be rejected. You MUST provide a " +
-    "descriptive title and body that explain what changes were made. Call this after committing your changes.",
+    "descriptive title and body that explain what changes were made. Call this after committing your changes. " +
+    "Calling it again from the same branch updates that branch's open pull request with your latest commits. " +
+    "To open a separate, additional pull request (including stacked PRs), create a new branch with " +
+    "`git checkout -b`, commit, and call this tool again.",
   args: {
     title: z
       .string()
@@ -17,7 +20,9 @@ export default tool({
     baseBranch: z
       .string()
       .optional()
-      .describe("Target branch to merge into. Defaults to the repository's default branch (usually 'main')."),
+      .describe(
+        "Target branch to merge into. Defaults to the repository's default branch (usually 'main'). " +
+          "For a stacked pull request, pass the head branch of the pull request you are stacking on."),
     repo: z
       .string()
       .optional()

@@ -185,7 +185,8 @@ func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]an
 			case http.StatusNotFound:
 				return fmt.Sprintf("Session not found: %s. The session may have been deleted or the ID is incorrect.", e.Display())
 			case http.StatusConflict:
-				return fmt.Sprintf("Conflict: %s. A PR may already exist for this branch.", e.Display())
+				return fmt.Sprintf("Conflict: %s. To open an additional pull request, create a new branch "+
+					"(`git checkout -b`), commit, and call this tool again.", e.Display())
 			}
 			return "Failed to create pull request: " + e.Display()
 		}
@@ -198,15 +199,26 @@ func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]an
 	return prSuccessMessage(result)
 }
 
-// prSuccessMessage reports the created PR and its state. Repository policy can
-// force a draft even when the agent did not ask for one, so the state has to
-// come from the response rather than from the request.
+// prSuccessMessage reports the created (or reused) PR and its state. Repository
+// policy can force a draft even when the agent did not ask for one, so the state
+// has to come from the response rather than from the request. Calling the tool
+// again from the same branch updates that branch's open PR instead of opening a
+// new one, so the message has to say which of the two happened.
 func prSuccessMessage(result controlplane.PRResult) string {
+	branches := ""
+	if result.HeadBranch != "" && result.BaseBranch != "" {
+		branches = fmt.Sprintf(" (%s -> %s)", result.HeadBranch, result.BaseBranch)
+	}
+	if result.Updated {
+		return fmt.Sprintf("Pull request updated with your latest commits.\n\nPR #%d%s: %s",
+			result.PRNumber, branches, result.PRURL)
+	}
 	status := "The pull request is now ready for review."
 	if result.State == "draft" {
 		status = "The pull request is in draft mode."
 	}
-	return fmt.Sprintf("Pull request created successfully!\n\nPR #%d: %s\n\n%s", result.PRNumber, result.PRURL, status)
+	return fmt.Sprintf("Pull request created successfully!\n\nPR #%d%s: %s\n\n%s",
+		result.PRNumber, branches, result.PRURL, status)
 }
 
 // requireFeatureBranch returns a non-empty, agent-facing error when head is not

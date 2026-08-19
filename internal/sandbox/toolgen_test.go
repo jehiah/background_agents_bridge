@@ -78,6 +78,26 @@ func TestSpawnChildDescriptionExcludesSubtasks(t *testing.T) {
 	}
 }
 
+// TestCreatePRDescribesMultiplePullRequests guards the one-PR-per-branch
+// contract in the prose. A session may open several pull requests, and the
+// model can only pick between updating and opening one if the tool says which
+// action a repeat call takes.
+func TestCreatePRDescribesMultiplePullRequests(t *testing.T) {
+	js, err := generateToolJS("create-pull-request", "/bin/bridge")
+	if err != nil {
+		t.Fatalf("generateToolJS: %v", err)
+	}
+	for _, want := range []string{
+		"Calling it again from the same branch updates that branch's open pull request",
+		"create a new branch with",
+		"For a stacked pull request, pass the head branch of the pull request you are stacking on.",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("create-pull-request description missing %q\n---\n%s", want, js)
+		}
+	}
+}
+
 // TestSpawnChildReasoningSpellsXhigh guards the reasoning-effort wording. The
 // control plane rejects an unrecognized value outright, so the tool has to name
 // the accepted ones and pin the spelling the model otherwise guesses wrong.

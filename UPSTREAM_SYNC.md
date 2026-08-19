@@ -112,11 +112,13 @@ between still need review):
 
 | `2c3c1e69` Order compaction attribution by creation time (#1431) | **Ported** — the post-compaction fallback scoping added in `e89fb209` compared OpenCode message IDs, but those IDs encode a 48-bit truncation of their creation time, so they wrap roughly every 795 days and IDs minted after a rollover sort below every ID from the window before it. Attribution now orders by the message's own `time.created` against the wall-clock instant taken before the prompt was posted; a message with no usable timestamp is rejected rather than guessed at. Dropped `idIsAfter` and the ID-fixture test helpers, and rewrote the boundary tests around timestamps. |
 
+| `07264052` Allow multiple pull requests per session, one per head branch (#1434) | **Ported** — the guard change itself is control-plane (`pull-request-service.ts`); the sandbox side is the contract the agent sees. `PRResult` now carries `headBranch`/`baseBranch`/`updated`, and `prSuccessMessage` reports the resolved pair (`PR #12 (feature-x -> main)`) and says "updated with your latest commits" when an existing open PR on that head was reused. The 409 hint drops the misleading "A PR may already exist for this branch." for the actionable new-branch instruction, and the tool description plus `baseBranch` describe state the rule (same branch updates, `git checkout -b` opens another, pass the previous head as `baseBranch` to stack). Not ported: the matching `repository_boot.py` prose, which is the multi-repo `AGENTS.md` written by the un-ported boot orchestrator. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `2c3c1e69`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `07264052`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

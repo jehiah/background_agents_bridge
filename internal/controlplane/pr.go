@@ -23,6 +23,15 @@ type PRResult struct {
 	PRURL    string `json:"prUrl"`
 	State    string `json:"state"`
 
+	// HeadBranch and BaseBranch are the branches the control plane actually
+	// resolved. They can differ from what was requested (an omitted base falls
+	// back to the session's), so the agent is told which pair it got.
+	HeadBranch string `json:"headBranch"`
+	BaseBranch string `json:"baseBranch"`
+	// Updated reports that an existing open pull request on this head was
+	// force-pushed and reused rather than a new one being opened.
+	Updated bool `json:"updated"`
+
 	Status      string `json:"status"`
 	CreatePRURL string `json:"createPrUrl"`
 }
