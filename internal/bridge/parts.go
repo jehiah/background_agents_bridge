@@ -114,6 +114,10 @@ func buildPromptRequestBody(content, model, opencodeMessageID, reasoningEffort s
 				"reasoningEffort":  reasoningEffort,
 				"reasoningSummary": "auto",
 			}
+		case "xai":
+			// Grok takes its reasoning effort as an OpenCode variant, which is a
+			// property of the request rather than of the model spec.
+			body["variant"] = reasoningEffort
 		}
 	}
 
