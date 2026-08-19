@@ -128,11 +128,13 @@ between still need review):
 
 | `890a0bdc` Bound shared Slack API requests and pagination (#1507) | **Ported** (sandbox-runtime scope) — the timeouts and pagination caps are control-plane; in scope is the new `delivery_unknown` entry in `slackReasonGuidance`. Without it `runSlackNotify` remaps the reason to `slack_api_error`, whose guidance says the post did not go through — the opposite of what a timed-out confirmation means, and an invitation to post twice. |
 
+| `2dc3d7be` Bound repository clone and fetch during startup (#1510) | Excluded — entirely `repository_sync.py` and `repository_boot.py`, the boot orchestrator this port does not implement (see the divergence note). It gives startup `git clone`/`git fetch` injectable timeouts (300s/120s), kills the process group on timeout, and turns the sync result's flat failure list into per-repository outcomes so a timeout can be reported by name — fatal in fresh/build mode, a warning when restoring a snapshot or booting a repository image. Nothing here clones or fetches; the bridge attaches to a workspace the orchestrator has already prepared. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `890a0bdc`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `2dc3d7be`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
