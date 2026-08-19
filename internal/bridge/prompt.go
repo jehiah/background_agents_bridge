@@ -35,6 +35,15 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 	// refresh the delegated signing configuration while we are at it.
 	agent := b.agentGitUser(ctx)
 	author, err := promptGitAuthor(cmd.Author, agent)
+	// The bridge attributes what it is told to attribute: an agent-only prompt
+	// is a control-plane decision (no verified SCM identity on the participant),
+	// not a bridge fallback. Log the payload that decided it, so a session whose
+	// commits land under the agent identity can be traced to the right side.
+	b.log.Debug("prompt.git_identity",
+		"message_id", messageID,
+		"mode", cmd.Author.attributionMode(),
+		"attributed", author != nil,
+		"author_payload", truncateForLog(string(cmd.Author.raw), maxAuthorLogBytes))
 	if err == nil {
 		err = b.configureGitIdentity(ctx, author, agent)
 	}

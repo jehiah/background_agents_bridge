@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,6 +284,68 @@ func TestPromptGitAuthor(t *testing.T) {
 				t.Errorf("author = %+v, want nil", got)
 			case tc.want != nil && (got == nil || *got != *tc.want):
 				t.Errorf("author = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The attribution decision is the control plane's, so the diagnostics name the
+// shape it sent and keep the payload that produced it.
+func TestCommandAuthorDiagnostics(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{"attributed", `{"gitIdentity":{"mode":"attributed-user","name":"Jane","email":"j@e.test"}}`, "attributed-user"},
+		{"agent_only", `{"userId":"u1","gitIdentity":{"mode":"agent-only"}}`, "agent-only"},
+		{"empty_mode", `{"gitIdentity":{}}`, "empty-mode"},
+		{"legacy", `{"scmName":"Jane"}`, "legacy-scm"},
+		{"absent", `{"userId":"u1"}`, "absent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var author commandAuthor
+			if err := json.Unmarshal([]byte(tc.payload), &author); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := author.attributionMode(); got != tc.want {
+				t.Errorf("attributionMode = %q, want %q", got, tc.want)
+			}
+			// Verbatim, including the fields this struct does not model — that
+			// is the point of logging it.
+			if string(author.raw) != tc.payload {
+				t.Errorf("raw = %s, want %s", author.raw, tc.payload)
+			}
+		})
+	}
+}
+
+// The identity the log reports is the identity applySigningConfig writes.
+func TestEffectiveGitUser(t *testing.T) {
+	agent := GitUser{Name: "Acme Bot", Email: "bot@acme.test"}
+	prompt := GitUser{Name: "Jane", Email: "jane@example.com"}
+	signing := signingConfig{Enabled: true, CommitterName: "Signer", CommitterEmail: "signer@acme.test"}
+
+	cases := []struct {
+		name       string
+		config     signingConfig
+		author     *GitUser
+		want       GitUser
+		wantSource string
+	}{
+		{"prompt_author_wins", signingConfig{}, &prompt, prompt, "prompt_author"},
+		{"prompt_author_wins_while_signing", signing, &prompt, prompt, "prompt_author"},
+		// Unattributed and signing: the signature and the author must agree.
+		{"signing_committer", signing, nil, GitUser{Name: "Signer", Email: "signer@acme.test"}, "signing_committer"},
+		// Unattributed and unsigned: this is the OpenInspect-attributed case.
+		{"agent_fallback", signingConfig{}, nil, agent, "agent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, source := effectiveGitUser(tc.config, tc.author, agent)
+			if got != tc.want || source != tc.wantSource {
+				t.Errorf("effectiveGitUser = %+v/%s, want %+v/%s", got, source, tc.want, tc.wantSource)
 			}
 		})
 	}

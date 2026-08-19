@@ -139,10 +139,7 @@ func (b *AgentBridge) applySigningConfig(ctx context.Context, config signingConf
 				return err
 			}
 		}
-		effective := agent
-		if author != nil {
-			effective = *author
-		}
+		effective, _ := effectiveGitUser(config, author, agent)
 		if err := b.setGitConfig(ctx, map[string]string{
 			"user.name":  effective.Name,
 			"user.email": effective.Email,
@@ -170,12 +167,7 @@ func (b *AgentBridge) applySigningConfig(ctx context.Context, config signingConf
 		return err
 	}
 
-	// Without a trusted user to attribute to, the machine identity authors the
-	// commit too, so the signature and the author agree.
-	effective := GitUser{Name: config.CommitterName, Email: config.CommitterEmail}
-	if author != nil {
-		effective = *author
-	}
+	effective, _ := effectiveGitUser(config, author, agent)
 	if err := b.setGitConfig(ctx, map[string]string{
 		"author.name":  effective.Name,
 		"author.email": effective.Email,

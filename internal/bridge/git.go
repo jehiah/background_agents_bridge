@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
@@ -62,9 +63,33 @@ func (b *AgentBridge) configureGitIdentity(ctx context.Context, user *GitUser, a
 	if err != nil {
 		return err
 	}
+	// Log the identity that is about to be written, not just whether one was
+	// supplied: "attributed=false" alone cannot tell a deployment whether its
+	// commits carry the agent fallback because the control plane sent
+	// agent-only, or because the fallback itself is misconfigured.
+	effective, source := effectiveGitUser(config, user, agent)
 	b.log.Debug("git.identity_configure",
-		"signing_enabled", config.Enabled, "attributed", user != nil)
+		"signing_enabled", config.Enabled, "attributed", user != nil,
+		"identity_source", source,
+		"user_name", effective.Name, "user_email", effective.Email,
+		"agent_name", agent.Name, "agent_email", agent.Email,
+		"committer_name", config.CommitterName, "committer_email", config.CommitterEmail)
 	return b.applySigningConfig(ctx, config, user, agent)
+}
+
+// effectiveGitUser resolves the identity commits are actually made under, and
+// names where it came from. applySigningConfig writes what this returns, so the
+// log above cannot drift from what lands in git config.
+func effectiveGitUser(config signingConfig, author *GitUser, agent GitUser) (GitUser, string) {
+	if author != nil {
+		return *author, "prompt_author"
+	}
+	if config.Enabled {
+		// Without a trusted user to attribute to, the machine identity authors
+		// the commit too, so the signature and the author agree.
+		return GitUser{Name: config.CommitterName, Email: config.CommitterEmail}, "signing_committer"
+	}
+	return agent, "agent"
 }
 
 // agentGitUser is the identity that stands in for the agent itself: the author
@@ -141,6 +166,23 @@ func promptGitAuthor(author commandAuthor, agent GitUser) (*GitUser, error) {
 		Name:  orDefault(author.SCMName, agent.Name),
 		Email: orDefault(author.SCMEmail, agent.Email),
 	}, nil
+}
+
+// maxAuthorLogBytes bounds the logged author payload. The real one is a handful
+// of short strings; the bound is only there so a malformed command cannot flood
+// the log.
+const maxAuthorLogBytes = 1024
+
+// truncateForLog caps a log value on a rune boundary, so a clipped value is
+// still valid UTF-8.
+func truncateForLog(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit] + "…"
 }
 
 // errInvalidGitIdentity matches the upstream message so the control plane sees

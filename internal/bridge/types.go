@@ -1,7 +1,9 @@
 package bridge
 
 import (
+	"encoding/json"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
@@ -183,6 +185,42 @@ type commandAuthor struct {
 	GitIdentity *gitIdentity `json:"gitIdentity"`
 	SCMName     string       `json:"scmName"`
 	SCMEmail    string       `json:"scmEmail"`
+
+	// raw is the author object exactly as it arrived. Commits landing under the
+	// wrong identity are diagnosed from the outside — all the bridge can say on
+	// its own is "the control plane asked for agent-only" — so the payload that
+	// produced that decision is logged verbatim at debug level.
+	raw json.RawMessage
+}
+
+// authorFields is commandAuthor without its UnmarshalJSON method, so the shim
+// below can decode the whole field set without recursing into itself.
+type authorFields commandAuthor
+
+func (a *commandAuthor) UnmarshalJSON(data []byte) error {
+	var decoded authorFields
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*a = commandAuthor(decoded)
+	a.raw = slices.Clone(data)
+	return nil
+}
+
+// attributionMode names the shape the control plane sent, which is what
+// decides whether a commit carries a user's name. It is the log's answer to
+// "was this the control plane's choice or the bridge's fallback?".
+func (a commandAuthor) attributionMode() string {
+	switch {
+	case a.GitIdentity != nil && a.GitIdentity.Mode != "":
+		return a.GitIdentity.Mode
+	case a.GitIdentity != nil:
+		return "empty-mode"
+	case a.SCMName != "" || a.SCMEmail != "":
+		return "legacy-scm"
+	default:
+		return "absent"
+	}
 }
 
 // gitIdentity is the prompt's commit attribution: mode "agent-only" (no
