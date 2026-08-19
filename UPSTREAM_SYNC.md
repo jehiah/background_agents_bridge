@@ -118,11 +118,13 @@ between still need review):
 
 | `0c93a127` Clarify child session tool routing (#1484) | **Ported** — the `spawn-child` description now leads with the opt-in ("Use this tool ONLY when the user's current request explicitly and affirmatively asks…"), widens the do-not-match list to include 'sub agent' and Task tool requests, names the in-process Task tool as the alternative, and adds that mentioning, comparing or rejecting child sessions does not authorize one. Prose only; `TestSpawnChildDescriptionExcludesSubtasks` extended to the new wording. |
 
+| `ddae7390` Remove unused Python sig1 implementation (#1482) | Excluded — deletes `auth/service_auth.py` with its tests and golden-vector generator, leaving the TypeScript implementation as the sole authority. This port never had a sig1 signer (nothing in `internal/` references it); the bridge authenticates to the control plane with its bearer token. Nothing to delete or replace. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `0c93a127`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `ddae7390`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
