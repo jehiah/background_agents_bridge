@@ -84,12 +84,13 @@ between still need review):
 | `68341779` SuperGrok subscription support (#1236) | **Partially ported** — only the prompt-body change. `xai` reasoning effort goes out as a top-level `variant` field rather than under `model.options` (`buildPromptRequestBody`), so a Grok model selected upstream does not silently lose its effort here. The rest is out of scope: `entrypoint.py`'s managed-OAuth setup (marker env vars `OPENAI_OAUTH_MANAGED`/`XAI_OAUTH_MANAGED`, merged `auth.json` entries, plugin deployment) belongs to the un-ported supervisor, and `xai-auth-plugin.js` is an image-baked OpenCode plugin that brokers tokens from a new control-plane route. This port ships no plugins and has neither the markers nor the route. |
 | `693defa9` Grok 4.5 model support (#1238) | Excluded — the only in-scope production change empties the `variants` map on the synthetic `grok-build-0.1` entry in `xai-auth-plugin.js` (Grok Build reasons internally but rejects an effort), and this port ships no plugins. `xai/grok-4.5` itself is a shared-catalog entry resolved from OpenCode's own xAI catalog, and the guard against sending a stale effort to a variant-less model lives in the control plane. The `variant` behavior upstream re-tests here is already ported (#1236); its golden case was retargeted from `grok-build-0.1` to `grok-4.5` to match. |
 | `41a37e4e` Luna max reasoning support (#1239) | Excluded — nothing under `src/sandbox_runtime` changed. The one in-scope line bumps an `@opencode-ai/plugin` fixture string (1.17.18 → 1.18.11) in a test for the un-ported deps-staging step, riding along with a repo-wide OpenCode version bump. The feature is a shared-catalog entry (`openai/gpt-5.6-luna` gains the `max` effort); no runtime change is needed there or here, since the openai branch of `buildPromptRequestBody` forwards any effort verbatim. |
+| `97580a25` Modal image-build lifecycle fixes (#1249) | Excluded — entirely `entrypoint.py` and a new `modal_image_build_start.py`, both belonging to the un-ported boot orchestrator (same reason as `ec02a9a6`/`8cd3a46c`). Modal image builds now run in the sandbox's main process and take their callback token off stdin (`--await-modal-image-build-token-stdin-v1`) rather than from the environment, signal handling moves to a shutdown event that cancels the build cleanly, and hook `output_tail` is redacted in build mode. This port has no image-build mode and no supervisor. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `41a37e4e`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `97580a25`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
