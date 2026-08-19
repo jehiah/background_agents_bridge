@@ -71,15 +71,6 @@ func (c signingConfig) validate() error {
 	return nil
 }
 
-// revision identifies the installed signing state, so the git settings are
-// rewritten only when the control plane changes them.
-func (c signingConfig) revision() string {
-	if !c.Enabled {
-		return "disabled"
-	}
-	return strings.Join([]string{"enabled", c.CommitterName, c.CommitterEmail, c.PublicKey}, "\x00")
-}
-
 // fetchSigningConfig asks the control plane how (and whether) to sign. A 404
 // means the control plane predates delegated signing, which is reported as
 // "disabled" rather than as an error — unlike upstream, this port has to keep
@@ -131,19 +122,21 @@ const maxSigningConfigBytes = 64 * 1024
 // authored by the configured committer when signing is on, and by agent — the
 // agent's own identity, see agentGitUser — when it is off.
 //
+// Every call reconciles the full set of owned keys rather than skipping work
+// when the configuration is unchanged. What is installed can drift underneath
+// us — the agent has a shell and can edit git config — so "we already wrote
+// this" is not evidence that it is still there.
+//
 // Everything is written with `git config --global` — see configureGitIdentity
 // for why this port does not write per-checkout config.
 func (b *AgentBridge) applySigningConfig(ctx context.Context, config signingConfig, author *GitUser, agent GitUser) error {
 	b.signingMu.Lock()
 	defer b.signingMu.Unlock()
 
-	revision := config.revision()
 	if !config.Enabled {
-		if revision != b.installedSigningRevision {
-			for _, key := range signingConfigKeys {
-				if err := b.unsetGitConfig(ctx, key); err != nil {
-					return err
-				}
+		for _, key := range signingConfigKeys {
+			if err := b.unsetGitConfig(ctx, key); err != nil {
+				return err
 			}
 		}
 		effective := agent
@@ -156,7 +149,6 @@ func (b *AgentBridge) applySigningConfig(ctx context.Context, config signingConf
 		}); err != nil {
 			return err
 		}
-		b.installedSigningRevision = revision
 		return nil
 	}
 
@@ -167,17 +159,15 @@ func (b *AgentBridge) applySigningConfig(ctx context.Context, config signingConf
 		return fmt.Errorf("commit signing is enabled but %s is not installed", sandbox.GitSignerCommand)
 	}
 
-	if revision != b.installedSigningRevision {
-		if err := b.setGitConfig(ctx, map[string]string{
-			"committer.name":  config.CommitterName,
-			"committer.email": config.CommitterEmail,
-			"gpg.format":      "ssh",
-			"gpg.ssh.program": signer,
-			"user.signingkey": "key::" + config.PublicKey,
-			"commit.gpgsign":  "true",
-		}); err != nil {
-			return err
-		}
+	if err := b.setGitConfig(ctx, map[string]string{
+		"committer.name":  config.CommitterName,
+		"committer.email": config.CommitterEmail,
+		"gpg.format":      "ssh",
+		"gpg.ssh.program": signer,
+		"user.signingkey": "key::" + config.PublicKey,
+		"commit.gpgsign":  "true",
+	}); err != nil {
+		return err
 	}
 
 	// Without a trusted user to attribute to, the machine identity authors the
@@ -194,14 +184,16 @@ func (b *AgentBridge) applySigningConfig(ctx context.Context, config signingConf
 	}); err != nil {
 		return err
 	}
-	b.installedSigningRevision = revision
 	return nil
 }
 
 // setGitConfig writes keys in a stable order so failures are reproducible.
+// --replace-all collapses a key that already holds several values into the one
+// we want; a plain write against a multivalued key fails instead, which would
+// leave the drift it was meant to repair in place.
 func (b *AgentBridge) setGitConfig(ctx context.Context, values map[string]string) error {
 	for _, key := range slices.Sorted(maps.Keys(values)) {
-		if err := b.runGitConfig(ctx, key, key, values[key]); err != nil {
+		if err := b.runGitConfig(ctx, key, "--replace-all", key, values[key]); err != nil {
 			return err
 		}
 	}

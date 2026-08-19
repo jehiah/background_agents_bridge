@@ -163,6 +163,104 @@ func TestConfigureGitIdentityClearsStaleSigning(t *testing.T) {
 	}
 }
 
+// writeGlobalConfig runs one `git config --global` against home's config, for
+// tests that need to disturb what the bridge installed.
+func writeGlobalConfig(t *testing.T, home string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", append([]string{"config", "--global"}, args...)...)
+	command.Env = append(os.Environ(), "HOME="+home, "GIT_CONFIG_NOSYSTEM=1")
+	if out, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git config --global %v: %v: %s", args, err, out)
+	}
+}
+
+// TestConfigureGitIdentityRepairsSigningDrift verifies each prompt reconciles
+// the owned keys rather than trusting what an earlier prompt installed. The
+// agent has a shell, so the configuration can be edited out from under us —
+// including into a multivalued key, which a plain write would fail on.
+func TestConfigureGitIdentityRepairsSigningDrift(t *testing.T) {
+	signer := installFakeSigner(t)
+	b, home := signingBridge(t, http.StatusOK,
+		`{"enabled":true,"committerName":"Open-Inspect","committerEmail":"bot@example.com",
+		  "publicKey":"`+testPublicKey+`"}`)
+
+	if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err != nil {
+		t.Fatalf("configureGitIdentity: %v", err)
+	}
+
+	writeGlobalConfig(t, home, "--unset-all", "commit.gpgsign")
+	writeGlobalConfig(t, home, "user.signingkey", "key::ssh-ed25519 AAAAsomethingelse")
+	writeGlobalConfig(t, home, "--add", "gpg.format", "openpgp")
+
+	if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err != nil {
+		t.Fatalf("configureGitIdentity after drift: %v", err)
+	}
+	for key, want := range map[string]string{
+		"commit.gpgsign":  "true",
+		"user.signingkey": "key::" + testPublicKey,
+		"gpg.format":      "ssh",
+		"gpg.ssh.program": signer,
+	} {
+		if got := globalConfig(t, home, key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	// --replace-all must collapse the duplicate, not leave "ssh" beside it.
+	command := exec.Command("git", "config", "--global", "--get-all", "gpg.format")
+	command.Env = append(os.Environ(), "HOME="+home, "GIT_CONFIG_NOSYSTEM=1")
+	out, err := command.Output()
+	if err != nil {
+		t.Fatalf("git config --get-all gpg.format: %v", err)
+	}
+	if got := strings.Fields(string(out)); len(got) != 1 {
+		t.Errorf("gpg.format values = %v, want exactly one", got)
+	}
+}
+
+// TestConfigureGitIdentityRepairsDisabledDrift verifies the same reconciliation
+// with signing off: a signing key that reappears mid-session would make every
+// later commit fail, so each prompt clears the owned keys again.
+func TestConfigureGitIdentityRepairsDisabledDrift(t *testing.T) {
+	b, home := signingBridge(t, http.StatusOK, `{"enabled":false}`)
+
+	if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err != nil {
+		t.Fatalf("configureGitIdentity: %v", err)
+	}
+	writeGlobalConfig(t, home, "commit.gpgsign", "true")
+	writeGlobalConfig(t, home, "user.signingkey", "key::"+testPublicKey)
+
+	if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err != nil {
+		t.Fatalf("configureGitIdentity after drift: %v", err)
+	}
+	for _, key := range signingConfigKeys {
+		if got := globalConfig(t, home, key); got != "" {
+			t.Errorf("%s = %q, want unset", key, got)
+		}
+	}
+}
+
+// TestConfigureGitIdentityPreservesUnownedConfig verifies reconciliation is
+// scoped to signingConfigKeys: settings the session or the agent made for its
+// own reasons are not collateral damage.
+func TestConfigureGitIdentityPreservesUnownedConfig(t *testing.T) {
+	installFakeSigner(t)
+	b, home := signingBridge(t, http.StatusOK,
+		`{"enabled":true,"committerName":"Open-Inspect","committerEmail":"bot@example.com",
+		  "publicKey":"`+testPublicKey+`"}`)
+
+	writeGlobalConfig(t, home, "core.editor", "vim")
+	writeGlobalConfig(t, home, "init.defaultBranch", "trunk")
+
+	if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err != nil {
+		t.Fatalf("configureGitIdentity: %v", err)
+	}
+	for key, want := range map[string]string{"core.editor": "vim", "init.defaultBranch": "trunk"} {
+		if got := globalConfig(t, home, key); got != want {
+			t.Errorf("%s = %q, want %q — unowned config was disturbed", key, got, want)
+		}
+	}
+}
+
 func TestConfigureGitIdentityUnsupportedControlPlane(t *testing.T) {
 	b, home := signingBridge(t, http.StatusNotFound, "")
 

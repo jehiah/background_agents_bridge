@@ -122,11 +122,13 @@ between still need review):
 
 | `1a31be35` Interrupt supervisor restart backoff (#1445) | Excluded — a follow-up to `41bc4ca6` in the same un-ported file: `supervisor.py` gets a shutdown-aware wait so restart backoff and monitor polling stop early instead of sleeping through a shutdown. This port has no service supervisor; `bridge run-opencode` runs a single child under the caller's context, which already cancels its waits. |
 
+| `03938875` Reconcile Git signing configuration on every refresh (#1492) | **Ported** — dropped the process-local install cache (`signingConfig.revision()` and `AgentBridge.installedSigningRevision`) and the two `signing_state_changed` guards, so every prompt reconciles the full set of owned keys: the disabled path always unsets them, the enabled path always rewrites them. `setGitConfig` now passes `--replace-all`, without which a key that drifted into holding several values makes `git config` fail rather than be repaired. Tests cover enabled and disabled drift repair, the multivalued key, and that unowned config survives. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `1a31be35`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `03938875`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

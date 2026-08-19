@@ -88,10 +88,9 @@ type AgentBridge struct {
 	gitSyncDoneC chan struct{}
 
 	// signingMu serializes the global git config writes that carry commit
-	// attribution and signing, and guards the revision installed by the last
-	// one (so unchanged signing settings are not rewritten every prompt).
-	signingMu                sync.Mutex
-	installedSigningRevision string
+	// attribution and signing, so two prompts cannot interleave halves of the
+	// configuration.
+	signingMu sync.Mutex
 }
 
 // New constructs an AgentBridge. log should already carry base attributes
