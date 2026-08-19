@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -34,10 +35,21 @@ func (b *AgentBridge) connectAndRun(ctx context.Context) error {
 	conn.SetReadLimit(wsReadLimit)
 
 	b.setConn(conn)
+	b.markConnected()
+	// Backstop disconnect log for every exit path that did not already log one
+	// (context cancellation, a read error that is not a close frame, a failure
+	// while announcing readiness). Runs last, after the socket is closed.
+	defer func() {
+		reason := "connection_closed"
+		if ctx.Err() != nil {
+			reason = "shutdown_requested"
+		}
+		b.logDisconnect(reason, slog.LevelInfo)
+	}()
 	defer b.clearConn()
 	defer func() { _ = conn.CloseNow() }()
 
-	b.log.Info("bridge.connect", "outcome", "success")
+	b.log.Info("bridge.connect", append([]any{"outcome", "success"}, b.aggregateFields()...)...)
 
 	// Announce readiness, then replay anything buffered/unacked across the gap.
 	b.sendEvent(readyEvent(b.getOpencodeSessionID()))
@@ -52,6 +64,13 @@ func (b *AgentBridge) connectAndRun(ctx context.Context) error {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
+			if code := websocket.CloseStatus(err); code != -1 {
+				level := slog.LevelWarn
+				if code == websocket.StatusNormalClosure || code == websocket.StatusGoingAway {
+					level = slog.LevelInfo
+				}
+				b.logDisconnect("connection_closed", level, "ws_close_code", int(code))
+			}
 			return err
 		}
 		var cmd command
