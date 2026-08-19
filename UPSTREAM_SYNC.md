@@ -98,11 +98,13 @@ between still need review):
 
 | `746a8594` Sandbox desktop streaming with VNC (#1332) | Excluded — the in-scope change is an opt-in Xvfb/fluxbox/x11vnc/websockify sidecar stack in `entrypoint.py` (plus its port/password constants and `test_vnc_supervisor.py`), which belongs to the un-ported boot orchestrator. The supervisor pops `VNC_PASSWORD` from the environment before spawning any child, writes it 3DES-obfuscated to a mode-0600 rfbauth file, sets `DISPLAY` so agent-launched GUI processes land on the shared display, and restarts the stack best-effort. Everything else is control plane, providers, and web UI. This port runs no sidecars. |
 
+| `4ff60aca` Remove implementation-coupled coverage (#1335) | Excluded — a test-pruning sweep across the repo. In scope it deletes `test_setup_script.py`, `test_types.py`, most of `test_spawn_child_tool.py`, and part of `test_bridge_git_identity.py`, and drops the now-unused `FALLBACK_GIT_USER` compatibility alias from `bridge.py`. No behaviour changes, and this port has no equivalent alias. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `746a8594`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `4ff60aca`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
