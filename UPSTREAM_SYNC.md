@@ -116,11 +116,13 @@ between still need review):
 
 | `41bc4ca6` Extract supervisor process handlers (#1443) | Excluded — a behaviour-preserving decomposition of `supervisor.py`, the process manager this port does not implement: per-service restart handling moves into handler objects, with restart limits, backoff, error reporting and shutdown unchanged. Nothing touches the bridge or the tools. |
 
+| `0c93a127` Clarify child session tool routing (#1484) | **Ported** — the `spawn-child` description now leads with the opt-in ("Use this tool ONLY when the user's current request explicitly and affirmatively asks…"), widens the do-not-match list to include 'sub agent' and Task tool requests, names the in-process Task tool as the alternative, and adds that mentioning, comparing or rejecting child sessions does not authorize one. Prose only; `TestSpawnChildDescriptionExcludesSubtasks` extended to the new wording. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `41bc4ca6`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `0c93a127`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
