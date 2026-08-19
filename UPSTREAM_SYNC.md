@@ -89,12 +89,13 @@ between still need review):
 | `b1d98cd6` Distinguish subtasks from child sessions (#1258) | **Ported** — the `spawn-child` tool description now names 'sub-agent'/'subagent'/'sub-task'/'subtask' as *not* requests for a child session (they mean in-process task delegation), and says "suggest using a child session" instead of the ambiguous "using one". Text only; a `toolgen` test pins the wording. |
 | `ca95ed36` Fix folding for delayed child task events (#1259) | **Ported.** A child session's closed Task call is now remembered by id, so activity that trails a completed task nests under it instead of being flushed uncorrelated, and an already-bound message stays bound when the child session is resumed under a new task. Most of this arrived early: `childActivityCorrelator` was written against upstream's post-`ca95ed36` file, so the `142fff4e` row above covers the correlator half. What landed here is the consumer change — the child `session.error` branch calls `taskForActivity` rather than `activeTask` — plus the correlator and stream tests for a late error and a resumed task. |
 | `d66615c0` Fix Task folding metadata extraction (#1260) | **Ported** — the child session id is read from the task part's tool *state* (`state.metadata.sessionId`), not the part itself, which is where OpenCode actually puts it. Without this the `task_metadata` discovery path never fired and no child was ever bound to a Task call. Upstream's tests also pin the sequencing this exposes: a foreground task publishes the metadata only on its *completed* state, after the child's own activity has streamed, so correlation always runs through the hold-then-release path from `142fff4e`. The port's tests were updated to the real shape. |
+| `f1e4318c` Remove dead legacy callback-signing token generator (#1282) | Excluded — deletes `generate_internal_token` from `sandbox_runtime/auth/internal.py` (and its re-export) now that image-build callbacks sign with the newer scheme. The whole `auth/` package is un-ported: this bridge authenticates to the control plane with its own credential, has no `MODAL_API_SECRET`, and serves no inbound endpoints to verify tokens for. The rest of the commit is `packages/modal-infra`. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `d66615c0`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `f1e4318c`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
