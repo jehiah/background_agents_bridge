@@ -319,7 +319,7 @@ func runSpawnTask(ctx context.Context, c *controlplane.Client, args map[string]a
 		"  Task ID: " + result.SessionID,
 		"  Status:  PENDING",
 		"",
-		"Use get-task-status with this task ID to check progress.",
+		"The task will continue independently. Check status only when you need its result; do not poll repeatedly.",
 	}, "\n")
 }
 
