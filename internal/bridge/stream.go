@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -111,9 +112,18 @@ func (b *AgentBridge) streamOpencodeResponse(
 
 	s := newStreamState(messageID, ocMsgID, ocSessionID)
 
-	// The SSE read is bounded by an inactivity deadline: a timer cancels sseCtx
-	// if no chunk arrives within sseInactivityTimeout, and is reset per chunk.
-	sseCtx, sseCancel := context.WithCancel(ctx)
+	// The whole prompt is bounded by an absolute deadline covering the SSE
+	// handshake, the prompt POST, and every event wait — not just the gaps
+	// between events. A stream that goes silent (or never opens) has to trip it,
+	// so it cannot be a check made after each event arrives.
+	startWall := time.Now()
+	promptCtx, promptCancel := context.WithTimeout(ctx, promptMaxDuration)
+	defer promptCancel()
+
+	// The SSE read is bounded by an inactivity deadline too: a timer cancels
+	// sseCtx if no chunk arrives within sseInactivityTimeout, and is reset per
+	// chunk. sseCtx descends from promptCtx, so the deadline cancels it as well.
+	sseCtx, sseCancel := context.WithCancel(promptCtx)
 	defer sseCancel()
 	var inactivity atomic.Bool
 	timer := time.AfterFunc(b.sseInactivityTimeout, func() {
@@ -128,6 +138,9 @@ func (b *AgentBridge) streamOpencodeResponse(
 	}
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
+		if promptDeadlineExceeded(ctx, promptCtx) {
+			return b.onPromptDeadline(ctx, s, emit, startWall)
+		}
 		if inactivity.Load() {
 			return b.onStreamInactivity(ctx, s, emit)
 		}
@@ -142,12 +155,12 @@ func (b *AgentBridge) streamOpencodeResponse(
 	}
 
 	// Post the prompt only once we are listening for its events.
-	if err := b.postPrompt(ctx, ocSessionID, body); err != nil {
+	if err := b.postPrompt(promptCtx, ocSessionID, body); err != nil {
+		if promptDeadlineExceeded(ctx, promptCtx) {
+			return b.onPromptDeadline(ctx, s, emit, startWall)
+		}
 		return err
 	}
-
-	startWall := time.Now()
-	promptStart := time.Now()
 
 	var finishErr, readErr error
 	for ev, err := range sse.Read(resp.Body, &sse.ReadConfig{MaxEventSize: sseMaxEventSize}) {
@@ -178,22 +191,13 @@ func (b *AgentBridge) streamOpencodeResponse(
 		if stop {
 			break
 		}
-		if time.Since(promptStart) > promptMaxDuration {
-			b.log.Error("bridge.prompt_max_duration_timeout",
-				"timeout_ms", promptMaxDuration.Milliseconds(),
-				"elapsed_ms", time.Since(startWall).Milliseconds(),
-				"message_id", messageID,
-			)
-			b.requestOpencodeStop(ctx, "prompt_max_duration_timeout")
-			b.fetchFinalMessageState(ctx, s, emit)
-			finishErr = fmt.Errorf("prompt exceeded max duration of %.0fs", promptMaxDuration.Seconds())
-			break
-		}
 	}
 
 	switch {
 	case finishErr != nil:
 		return finishErr
+	case promptDeadlineExceeded(ctx, promptCtx):
+		return b.onPromptDeadline(ctx, s, emit, startWall)
 	case inactivity.Load():
 		return b.onStreamInactivity(ctx, s, emit)
 	case readErr != nil && ctx.Err() != nil:
@@ -203,6 +207,40 @@ func (b *AgentBridge) streamOpencodeResponse(
 	default:
 		return nil
 	}
+}
+
+// promptDeadlineExceeded reports whether the prompt ran out of its own budget,
+// as opposed to the bridge shutting down: a cancelled parent expires promptCtx
+// too, and that is a shutdown, not a timeout.
+func promptDeadlineExceeded(ctx, promptCtx context.Context) bool {
+	return ctx.Err() == nil && errors.Is(promptCtx.Err(), context.DeadlineExceeded)
+}
+
+// onPromptDeadline handles a prompt exceeding its maximum duration: abort
+// OpenCode, flush whatever it persisted, and fail with a stable message.
+//
+// The cleanup is bounded by promptCleanupTimeout because it is what stands
+// between the deadline and the end of the sandbox lifetime — an abort or a
+// final-state fetch that hangs (the same silence that caused the timeout) would
+// otherwise eat the reserve the snapshot needs. Its context comes from the
+// parent, since the prompt's own is already expired.
+func (b *AgentBridge) onPromptDeadline(ctx context.Context, s *streamState, emit func(event), startWall time.Time) error {
+	b.log.Error("bridge.prompt_max_duration_timeout",
+		"timeout_ms", promptMaxDuration.Milliseconds(),
+		"elapsed_ms", time.Since(startWall).Milliseconds(),
+		"message_id", s.messageID,
+	)
+	cleanupCtx, cancel := context.WithTimeout(ctx, promptCleanupTimeout)
+	defer cancel()
+	b.requestOpencodeStop(cleanupCtx, "prompt_max_duration_timeout")
+	b.fetchFinalMessageState(cleanupCtx, s, emit)
+	if errors.Is(cleanupCtx.Err(), context.DeadlineExceeded) {
+		b.log.Error("bridge.prompt_timeout_cleanup_timeout",
+			"timeout_ms", promptCleanupTimeout.Milliseconds(),
+			"message_id", s.messageID,
+		)
+	}
+	return fmt.Errorf("prompt exceeded max duration of %.0fs", promptMaxDuration.Seconds())
 }
 
 // onStreamTransportError handles the event stream dropping mid-response: flush

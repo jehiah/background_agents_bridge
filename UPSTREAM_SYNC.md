@@ -80,12 +80,13 @@ between still need review):
 | `8cd3a46c` durable image build finalization (#1204) | Excluded — the whole in-scope change is in `entrypoint.py`, the boot orchestrator this port does not implement (see the divergence note). It bounds image-build mode with a new `OI_IMAGE_BUILD_EXECUTION_TIMEOUT_SECONDS` budget, splits `run()` into `_run_repository_boot` (returning a new `RepositoryBootResult`) plus `_run_image_build_execution`, keeps the sandbox alive on `shutdown_event.wait()` so the control plane can snapshot it out of band, and hardens every clone/fetch/checkout/hook subprocess with `start_new_session=True` plus a kill-the-process-group-on-cancel wrapper. This port has no image-build mode, repository sync, or hook runner. The process-group idea is worth revisiting if a Go supervisor is ever written — `exec.CommandContext` signals only the direct child. |
 | `1daf6253` remove the legacy Modal image builder (#1208) | Excluded — follows from the `ec02a9a6` exclusion. In sandbox-runtime it only re-keys two `service_auth` test vectors and one tampering case off the retired `modal` service identity; that module was never ported, and the rest of the commit deletes the Modal image builder and its control-plane/terraform wiring. |
 | `35c50aef` pass reasoning settings to child sessions (#1226) | **Ported.** `spawn-child` gains an optional `reasoning` arg forwarded to the control plane as `reasoningEffort`; absent means the child inherits the parent's effort. Upstream forwards only when `!== undefined`, so `""` is a real value — the Go request carries it as `*string` (nil omits) via a new `argStrPtr` helper. Upstream's new node test of the tool shim does not transfer (tools execute in Go here); `TestRunSpawnChildReasoning` asserts the posted body for set/empty/absent instead. |
+| `18f9b902` derive prompt timeout from sandbox lifetime (#1232) | **Ported**, minus the env plumbing. The flat `promptMaxDuration = 5400s` is now derived from a sandbox lifetime (7200s) less a snapshot reserve of `min(900s, lifetime*0.25)`, giving a 6300s prompt budget and a 900s cleanup budget. Upstream reads the lifetime from `SANDBOX_TIMEOUT_SECONDS`, which its providers set; nothing supplies that here, so `sandboxLifetime` is a constant fed to `snapshotReserve` — see the divergence note. The deadline also becomes absolute: it covers the SSE handshake and every event wait instead of being checked after each event, so a stream that opens and goes silent now trips it. Cleanup after a timeout (abort + final-state flush) is bounded by the reserve. Upstream's `aiter`/`anext` restructuring has no analogue — Go has no generator to cancel at a suspended `yield`. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `35c50aef`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `18f9b902`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
@@ -124,6 +125,19 @@ the newest reviewed commit and note any deliberate divergences below.
   future Claude family member that drops adaptive thinking needs an entry in
   `anthropicFixedThinkingModels`. Other families (`claude-haiku-*`) and
   providers are unaffected, as are explicit `provider/model` overrides.
+
+- **The sandbox lifetime is a constant, not an environment variable.** Upstream's
+  prompt budget is derived from `SANDBOX_TIMEOUT_SECONDS`, which each provider
+  (E2B, Vercel, Modal) sets on the sandbox it creates. No such variable reaches
+  the sandbox here, so `sandboxLifetime` in `internal/bridge/config.go` holds
+  upstream's default (7200s) and the derivation is otherwise identical:
+  `promptCleanupTimeout = snapshotReserve(sandboxLifetime)`,
+  `promptMaxDuration = sandboxLifetime - promptCleanupTimeout`. A deployment that
+  does learn its own lifetime should feed it to `snapshotReserve` rather than
+  re-tune the two budgets by hand. Related: upstream's deadline also had to cover
+  the prompt POST because that call was unbounded; here it already carries
+  `opencodeRequestTimeout`, so the deadline only matters for the SSE handshake
+  and the event waits.
 
 - **Supervisor (`entrypoint.py`) is not ported.** The Go port covers the bridge,
   git-credential helper, control-plane client, install, and native tools — not

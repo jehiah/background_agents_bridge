@@ -22,8 +22,20 @@ const (
 	opencodeRequestTimeout = 30 * time.Second
 	gitPushTimeout         = 300 * time.Second
 	gitPushTerminateGrace  = 5 * time.Second
-	promptMaxDuration      = 5400 * time.Second
 	gitConfigTimeout       = 10 * time.Second
+
+	// sandboxLifetime is how long the sandbox this bridge runs in is expected to
+	// live. Upstream reads it from SANDBOX_TIMEOUT_SECONDS, which its providers
+	// set per sandbox; nothing supplies that value here, so the default stands
+	// on its own. A deployment that learns its own lifetime should feed it to
+	// snapshotReserve rather than re-tuning the two derived budgets by hand.
+	sandboxLifetime = 7200 * time.Second
+	// maxSnapshotReserve / snapshotReserveFraction bound the tail of the sandbox
+	// lifetime kept free for snapshotting after a prompt is cut short. Short
+	// sandboxes get a proportional slice instead of the flat maximum, which
+	// would otherwise consume most of their lifetime.
+	maxSnapshotReserve      = 900 * time.Second
+	snapshotReserveFraction = 0.25
 
 	maxPendingPartEvents = 2000
 	maxEventBufferSize   = 1000
@@ -39,6 +51,21 @@ const (
 	// 64 KiB, which token/tool-output events routinely exceed.
 	sseMaxEventSize = 32 * 1024 * 1024
 )
+
+// promptCleanupTimeout bounds the abort-and-flush that follows a prompt hitting
+// its deadline, and promptMaxDuration is the prompt budget that remains. Derived
+// from the sandbox lifetime so the two together cannot outlive the sandbox: a
+// prompt that runs to its deadline still leaves the snapshot reserve behind it.
+var (
+	promptCleanupTimeout = snapshotReserve(sandboxLifetime)
+	promptMaxDuration    = sandboxLifetime - promptCleanupTimeout
+)
+
+// snapshotReserve is the part of a sandbox lifetime held back for snapshotting:
+// the flat maximum, or a fraction of the lifetime when that is smaller.
+func snapshotReserve(lifetime time.Duration) time.Duration {
+	return min(maxSnapshotReserve, time.Duration(float64(lifetime)*snapshotReserveFraction))
+}
 
 // criticalEventTypes are re-sent until acknowledged by the control plane.
 var criticalEventTypes = map[string]bool{
