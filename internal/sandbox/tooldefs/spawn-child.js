@@ -19,7 +19,11 @@ export default tool({
     reasoning: z
       .string()
       .optional()
-      .describe("Overrides the reasoning effort for the child. Defaults to the parent's reasoning effort."),
+      .describe(
+        "Overrides the reasoning effort for the child. Valid values depend on the model and may include " +
+        "'none', 'low', 'medium', 'high', 'xhigh', and 'max'. Use 'xhigh', not 'x-high'. Defaults to the " +
+        "parent's reasoning effort when the selected model supports it."
+      ),
   },
   async execute(args) {
     return await runBridgeTool("spawn-child", args);

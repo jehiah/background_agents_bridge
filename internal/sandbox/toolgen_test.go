@@ -78,6 +78,24 @@ func TestSpawnChildDescriptionExcludesSubtasks(t *testing.T) {
 	}
 }
 
+// TestSpawnChildReasoningSpellsXhigh guards the reasoning-effort wording. The
+// control plane rejects an unrecognized value outright, so the tool has to name
+// the accepted ones and pin the spelling the model otherwise guesses wrong.
+func TestSpawnChildReasoningSpellsXhigh(t *testing.T) {
+	js, err := generateToolJS("spawn-child", "/bin/bridge")
+	if err != nil {
+		t.Fatalf("generateToolJS: %v", err)
+	}
+	for _, want := range []string{
+		"'none', 'low', 'medium', 'high', 'xhigh', and 'max'",
+		"Use 'xhigh', not 'x-high'.",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("spawn-child reasoning description missing %q\n---\n%s", want, js)
+		}
+	}
+}
+
 func TestGenerateToolJSAllTools(t *testing.T) {
 	// Every fragment must render and carry its name and the bridge bin.
 	for _, name := range toolDefNames() {

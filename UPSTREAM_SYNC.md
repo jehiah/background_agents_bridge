@@ -100,11 +100,13 @@ between still need review):
 
 | `4ff60aca` Remove implementation-coupled coverage (#1335) | Excluded — a test-pruning sweep across the repo. In scope it deletes `test_setup_script.py`, `test_types.py`, most of `test_spawn_child_tool.py`, and part of `test_bridge_git_identity.py`, and drops the now-unused `FALLBACK_GIT_USER` compatibility alias from `bridge.py`. No behaviour changes, and this port has no equivalent alias. |
 
+| `6fb5e7ad` Validate child session reasoning effort (#1369) | **Ported** — the `spawn-child` tool's `reasoning` description now names the accepted values and pins the `xhigh` spelling (not `x-high`), which the model was guessing wrong. Upstream's other half is the control-plane route rejecting an unrecognized `reasoningEffort` with a 400 instead of dropping it silently; that validation lives outside this port. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `4ff60aca`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `6fb5e7ad`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
