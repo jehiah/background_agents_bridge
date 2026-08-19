@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -256,16 +257,18 @@ func TestPromptGitAuthor(t *testing.T) {
 			commandAuthor{SCMName: "Jane", SCMEmail: "jane@example.com"},
 			user("Jane", "jane@example.com"), false,
 		},
+		// The missing half comes from the agent identity, which a deployment
+		// can rename with openinspect.name / openinspect.email.
 		{
 			"legacy_partial",
 			commandAuthor{SCMName: "Jane"},
-			user("Jane", fallbackGitUser.Email), false,
+			user("Jane", "bot@acme.test"), false,
 		},
 		{"no_author", commandAuthor{}, nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := promptGitAuthor(tc.author)
+			got, err := promptGitAuthor(tc.author, GitUser{Name: "Acme Bot", Email: "bot@acme.test"})
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("want an error, got %+v", got)
@@ -280,6 +283,56 @@ func TestPromptGitAuthor(t *testing.T) {
 				t.Errorf("author = %+v, want nil", got)
 			case tc.want != nil && (got == nil || *got != *tc.want):
 				t.Errorf("author = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// setGlobalGitConfig sets one key in the git config under the current HOME,
+// which the caller has pointed at a scratch directory.
+func setGlobalGitConfig(t *testing.T, key, value string) {
+	t.Helper()
+	if out, err := exec.Command("git", "config", "--global", key, value).CombinedOutput(); err != nil {
+		t.Fatalf("git config --global %s: %v: %s", key, err, out)
+	}
+}
+
+func TestAgentGitUser(t *testing.T) {
+	cases := []struct {
+		name   string
+		config map[string]string
+		want   GitUser
+	}{
+		{"unset", nil, fallbackGitUser},
+		{
+			"both",
+			map[string]string{"openinspect.name": "Acme Bot", "openinspect.email": "bot@acme.test"},
+			GitUser{Name: "Acme Bot", Email: "bot@acme.test"},
+		},
+		// Each half falls back on its own, so naming the bot without giving it
+		// an address is not an error.
+		{
+			"name_only",
+			map[string]string{"openinspect.name": "Acme Bot"},
+			GitUser{Name: "Acme Bot", Email: fallbackGitUser.Email},
+		},
+		{
+			"email_only",
+			map[string]string{"openinspect.email": "bot@acme.test"},
+			GitUser{Name: fallbackGitUser.Name, Email: "bot@acme.test"},
+		},
+		// git stores a blank value verbatim; treat it as unset rather than
+		// committing with an empty name.
+		{"blank", map[string]string{"openinspect.name": "   "}, fallbackGitUser},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			for key, value := range tc.config {
+				setGlobalGitConfig(t, key, value)
+			}
+			if got := testBridge().agentGitUser(t.Context()); got != tc.want {
+				t.Errorf("agentGitUser() = %+v, want %+v", got, tc.want)
 			}
 		})
 	}

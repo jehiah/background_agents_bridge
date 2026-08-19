@@ -57,14 +57,55 @@ func (b *AgentBridge) findRepoDir() (string, bool) {
 //
 // Failures are returned, not swallowed: a commit made with the wrong author, or
 // unsigned under a signing deployment, is worse than a refused prompt.
-func (b *AgentBridge) configureGitIdentity(ctx context.Context, user *GitUser) error {
+func (b *AgentBridge) configureGitIdentity(ctx context.Context, user *GitUser, agent GitUser) error {
 	config, err := b.fetchSigningConfig(ctx)
 	if err != nil {
 		return err
 	}
 	b.log.Debug("git.identity_configure",
 		"signing_enabled", config.Enabled, "attributed", user != nil)
-	return b.applySigningConfig(ctx, config, user)
+	return b.applySigningConfig(ctx, config, user, agent)
+}
+
+// agentGitUser is the identity that stands in for the agent itself: the author
+// of an agent-only commit, and the filler for a legacy prompt that carries only
+// half of the scmName/scmEmail pair.
+//
+// It defaults to fallbackGitUser, but a sandbox image or a repository setup
+// script can name the deployment's own bot by setting openinspect.name and
+// openinspect.email in git config. Each field falls back independently, and a
+// blank value is treated as unset. The lookup is unscoped, so a repository-local
+// value wins over the global one when the bridge is running inside a checkout.
+//
+// A git that cannot be run at all leaves the defaults in place; the write side
+// (applySigningConfig) is where a broken git config surfaces as an error.
+func (b *AgentBridge) agentGitUser(ctx context.Context) GitUser {
+	user := fallbackGitUser
+	if name := b.gitConfigValue(ctx, "openinspect.name"); name != "" {
+		user.Name = name
+	}
+	if email := b.gitConfigValue(ctx, "openinspect.email"); email != "" {
+		user.Email = email
+	}
+	if user != fallbackGitUser {
+		b.log.Debug("git.agent_identity_override", "name", user.Name, "email", user.Email)
+	}
+	return user
+}
+
+// gitConfigValue reads one git config key, returning "" when it is unset (git
+// exits 1) or unreadable. Only the first line is used, so a multi-valued key
+// behaves like `git config --get`.
+func (b *AgentBridge) gitConfigValue(ctx context.Context, key string) string {
+	ctx, cancel := context.WithTimeout(ctx, gitConfigTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "git", "config", "--get", key).Output()
+	if err != nil {
+		return ""
+	}
+	value, _, _ := strings.Cut(string(out), "\n")
+	return strings.TrimSpace(value)
 }
 
 // promptGitAuthor resolves the commit author a prompt asks for. The control
@@ -75,8 +116,9 @@ func (b *AgentBridge) configureGitIdentity(ctx context.Context, user *GitUser) e
 // wrong name is worse than refusing the prompt.
 //
 // Older control planes omit gitIdentity and send scmName/scmEmail instead; that
-// legacy shape is still accepted so this port keeps working against them.
-func promptGitAuthor(author commandAuthor) (*GitUser, error) {
+// legacy shape is still accepted so this port keeps working against them, with
+// agent standing in for whichever half of the pair is missing.
+func promptGitAuthor(author commandAuthor, agent GitUser) (*GitUser, error) {
 	if identity := author.GitIdentity; identity != nil {
 		switch identity.Mode {
 		case "agent-only":
@@ -96,8 +138,8 @@ func promptGitAuthor(author commandAuthor) (*GitUser, error) {
 		return nil, nil
 	}
 	return &GitUser{
-		Name:  orDefault(author.SCMName, fallbackGitUser.Name),
-		Email: orDefault(author.SCMEmail, fallbackGitUser.Email),
+		Name:  orDefault(author.SCMName, agent.Name),
+		Email: orDefault(author.SCMEmail, agent.Email),
 	}, nil
 }
 

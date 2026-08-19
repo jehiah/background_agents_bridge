@@ -45,6 +45,11 @@ runs in one of several modes, selected by the first argument:
   signed; the bridge writes the matching `author.*`/`committer.*`/`gpg.*` global
   git config before each prompt runs. The signing key itself never enters the
   sandbox — only the public key, plus git pointed at the `oi-git-sign` shim.
+  Commits with no attributed user are authored by `OpenInspect
+  <open-inspect@noreply.github.com>`; a deployment substitutes its own bot by
+  setting `openinspect.name` / `openinspect.email` in git config (each falls
+  back independently, and the lookup is unscoped, so a repository-local value
+  wins).
 - **Self-install** on startup:
   - registers `bridge git-credential` as git's `credential.helper`
     (`git config --system credential.helper "bridge git-credential"`)

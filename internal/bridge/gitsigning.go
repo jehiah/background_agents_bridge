@@ -128,12 +128,12 @@ const maxSigningConfigBytes = 64 * 1024
 
 // applySigningConfig installs the signing settings and the prompt's author
 // identity into git. A nil author is agent-only attribution: commits are
-// authored by the configured committer when signing is on, and by the agent's
-// own identity when it is off.
+// authored by the configured committer when signing is on, and by agent — the
+// agent's own identity, see agentGitUser — when it is off.
 //
 // Everything is written with `git config --global` — see configureGitIdentity
 // for why this port does not write per-checkout config.
-func (b *AgentBridge) applySigningConfig(ctx context.Context, config signingConfig, author *GitUser) error {
+func (b *AgentBridge) applySigningConfig(ctx context.Context, config signingConfig, author *GitUser, agent GitUser) error {
 	b.signingMu.Lock()
 	defer b.signingMu.Unlock()
 
@@ -146,7 +146,7 @@ func (b *AgentBridge) applySigningConfig(ctx context.Context, config signingConf
 				}
 			}
 		}
-		effective := fallbackGitUser
+		effective := agent
 		if author != nil {
 			effective = *author
 		}

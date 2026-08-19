@@ -71,14 +71,14 @@ func TestConfigureGitIdentityWithoutSigning(t *testing.T) {
 	b, home := signingBridge(t, http.StatusOK, `{"enabled":false}`)
 
 	// Agent-only attribution still needs an identity, or git refuses to commit.
-	if err := b.configureGitIdentity(t.Context(), nil); err != nil {
+	if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err != nil {
 		t.Fatalf("configureGitIdentity: %v", err)
 	}
 	if got := globalConfig(t, home, "user.name"); got != fallbackGitUser.Name {
 		t.Errorf("user.name = %q, want %q", got, fallbackGitUser.Name)
 	}
 
-	if err := b.configureGitIdentity(t.Context(), &GitUser{Name: "Jane", Email: "jane@example.com"}); err != nil {
+	if err := b.configureGitIdentity(t.Context(), &GitUser{Name: "Jane", Email: "jane@example.com"}, fallbackGitUser); err != nil {
 		t.Fatalf("configureGitIdentity: %v", err)
 	}
 	if got := globalConfig(t, home, "user.email"); got != "jane@example.com" {
@@ -95,7 +95,7 @@ func TestConfigureGitIdentityInstallsSigning(t *testing.T) {
 		`{"enabled":true,"committerName":"Open-Inspect","committerEmail":"bot@example.com",
 		  "publicKey":"`+testPublicKey+`"}`)
 
-	if err := b.configureGitIdentity(t.Context(), &GitUser{Name: "Jane", Email: "jane@example.com"}); err != nil {
+	if err := b.configureGitIdentity(t.Context(), &GitUser{Name: "Jane", Email: "jane@example.com"}, fallbackGitUser); err != nil {
 		t.Fatalf("configureGitIdentity: %v", err)
 	}
 	// The user authors the commit; the machine identity commits and signs it.
@@ -117,7 +117,7 @@ func TestConfigureGitIdentityInstallsSigning(t *testing.T) {
 
 	// Without a trusted user the commit is authored by the signer, so the
 	// signature and the author agree.
-	if err := b.configureGitIdentity(t.Context(), nil); err != nil {
+	if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err != nil {
 		t.Fatalf("configureGitIdentity: %v", err)
 	}
 	if got := globalConfig(t, home, "author.name"); got != "Open-Inspect" {
@@ -144,13 +144,13 @@ func TestConfigureGitIdentityClearsStaleSigning(t *testing.T) {
 	b := testBridge()
 	b.controlPlaneURL, b.sessionID, b.authToken = server.URL, "ses_1", "tok"
 
-	if err := b.configureGitIdentity(t.Context(), nil); err != nil {
+	if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err != nil {
 		t.Fatalf("configureGitIdentity: %v", err)
 	}
 	// Signing is turned off mid-session: nothing may keep pointing git at the
 	// signer, or every later commit fails.
 	enabled = false
-	if err := b.configureGitIdentity(t.Context(), nil); err != nil {
+	if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err != nil {
 		t.Fatalf("configureGitIdentity: %v", err)
 	}
 	for _, key := range signingConfigKeys {
@@ -168,7 +168,7 @@ func TestConfigureGitIdentityUnsupportedControlPlane(t *testing.T) {
 
 	// A control plane that predates delegated signing answers 404. That is not
 	// an error here: the prompt runs, unsigned.
-	if err := b.configureGitIdentity(t.Context(), &GitUser{Name: "Jane", Email: "jane@example.com"}); err != nil {
+	if err := b.configureGitIdentity(t.Context(), &GitUser{Name: "Jane", Email: "jane@example.com"}, fallbackGitUser); err != nil {
 		t.Fatalf("configureGitIdentity: %v", err)
 	}
 	if got := globalConfig(t, home, "user.name"); got != "Jane" {
@@ -197,7 +197,7 @@ func TestConfigureGitIdentityFailsClosed(t *testing.T) {
 			b, _ := signingBridge(t, tc.status, tc.body)
 			// Committing under an identity we could not verify is worse than
 			// refusing the prompt.
-			if err := b.configureGitIdentity(t.Context(), nil); err == nil {
+			if err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser); err == nil {
 				t.Error("want an error")
 			}
 		})
@@ -211,8 +211,26 @@ func TestConfigureGitIdentityRequiresInstalledSigner(t *testing.T) {
 
 	// Signing is configured but the shim is missing: fail rather than silently
 	// producing unsigned commits.
-	err := b.configureGitIdentity(t.Context(), nil)
+	err := b.configureGitIdentity(t.Context(), nil, fallbackGitUser)
 	if err == nil || !strings.Contains(err.Error(), "oi-git-sign") {
 		t.Errorf("err = %v, want it to name the missing signer", err)
+	}
+}
+
+func TestConfigureGitIdentityUsesConfiguredAgentIdentity(t *testing.T) {
+	b, home := signingBridge(t, http.StatusOK, `{"enabled":false}`)
+	setGlobalGitConfig(t, "openinspect.name", "Acme Bot")
+	setGlobalGitConfig(t, "openinspect.email", "bot@acme.test")
+
+	// The deployment named its own bot, so an unattributed commit is authored
+	// as that bot instead of the built-in OpenInspect identity.
+	if err := b.configureGitIdentity(t.Context(), nil, b.agentGitUser(t.Context())); err != nil {
+		t.Fatalf("configureGitIdentity: %v", err)
+	}
+	if got := globalConfig(t, home, "user.name"); got != "Acme Bot" {
+		t.Errorf("user.name = %q", got)
+	}
+	if got := globalConfig(t, home, "user.email"); got != "bot@acme.test" {
+		t.Errorf("user.email = %q", got)
 	}
 }

@@ -164,6 +164,18 @@ the newest reviewed commit and note any deliberate divergences below.
   validation, or signing enabled while `oi-git-sign` is missing from `$PATH` all
   fail the prompt rather than producing a commit signed by — or attributed to —
   an identity the bridge could not confirm.
+- **The agent's own Git identity is configurable** through `openinspect.name`
+  and `openinspect.email` in git config. Upstream hard-codes
+  `OpenInspect <open-inspect@noreply.github.com>` in both runtimes; this port
+  keeps that as the default but lets a sandbox image or repository setup script
+  name the deployment's own bot, so agent-only commits are not attributed to
+  Open-Inspect upstream in a fork. It applies wherever the constant did — the
+  author of an agent-only commit when signing is off, and the filler for a
+  legacy prompt that carries only one of `scmName`/`scmEmail` — and never
+  overrides a control-plane committer identity, which stays authoritative when
+  signing is on. Each field falls back independently, a blank value counts as
+  unset, and the read is unscoped (`git config --get`), so a checkout-local
+  value wins over the global one.
 - **`gpg.ssh.program` points at an `oi-git-sign` shell shim**, not at the Go
   binary. Git execs the program directly (no shell, no extra argv), so a
   `bridge git-sign` subcommand cannot be named there; the shim is a two-line

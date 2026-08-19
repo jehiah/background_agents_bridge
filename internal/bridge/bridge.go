@@ -155,7 +155,7 @@ func (b *AgentBridge) Run(parent context.Context) error {
 	// commit made outside a prompt is still attributed and signed. A failure
 	// here is only a warning: the first prompt refreshes the configuration and
 	// reports the failure to the control plane if it persists.
-	if err := b.configureGitIdentity(ctx, nil); err != nil {
+	if err := b.configureGitIdentity(ctx, nil, b.agentGitUser(ctx)); err != nil {
 		b.log.Warn("git.signing_init_failed", "exc", err)
 	}
 

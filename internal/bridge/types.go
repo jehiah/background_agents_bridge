@@ -21,7 +21,9 @@ type GitUser struct {
 }
 
 // fallbackGitUser matches the co-author trailer used in shared/git.ts when a
-// prompt author has no SCM name/email configured.
+// prompt author has no SCM name/email configured. It is the default only: a
+// deployment names its own bot with openinspect.name / openinspect.email in git
+// config (see agentGitUser).
 var fallbackGitUser = GitUser{Name: "OpenInspect", Email: "open-inspect@noreply.github.com"}
 
 // nowUnix returns the current time as fractional Unix seconds, matching
