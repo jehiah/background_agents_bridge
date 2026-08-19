@@ -24,7 +24,7 @@ been reflected in (or deliberately excluded from) this Go port.
 
 > **This port is out of sync.** Roughly 56 upstream commits touch the relevant
 > paths after `5308371d`, and features are being ported out of order as they are
-> needed (see *Ported ahead of the sync point*) — most recently the durable
+> needed (see *Reviewed ahead of the sync point*) — most recently the durable
 > session diff viewer (`4df9a705` and its follow-ups) and managed skills
 > (`97f6aeb8`/`b8c757b2`), both ahead of the sync point. Treat the hash
 > above as the last *exhaustive* review, not as the port's feature level. A
@@ -54,22 +54,23 @@ Commits since the previous sync point (`7c0a3ab`), with disposition:
 | `5f5d54fb` portable session image attachments (#1019) | **Ported** — see `internal/bridge/attachments.go` (was ported ahead of the sync point). |
 | `5308371d` slack: attach generated media to completion threads (#1022) | Excluded — sandbox-runtime scope is one prose file, `skills/upload-screenshot/SKILL.md` (broadened from screenshots to generated charts/diagrams). This port does not ship the bundled skill docs; `internal/skills` only scans the image's skills tree for name collisions. The tool itself (`image-upload`) is unchanged, and the rest of the commit is slack-bot / Cloudflare Queue work. |
 
-### Ported ahead of the sync point
+### Reviewed ahead of the sync point
 
-These landed upstream **after** `5308371d` but were ported out of order (so the
-"in sync through" hash above is not yet bumped past them — the commits between
-still need review):
+These landed upstream **after** `5308371d` but were dispositioned out of order
+(so the "in sync through" hash above is not yet bumped past them — the commits
+between still need review):
 
 | Upstream | Disposition |
 | -------- | ----------- |
 | `4df9a705` durable session diff viewer (#1036) + `5c351a8a` exclude runtime assets (#1044) + `d2d2a075`/`33db62d4`/`836fd351` collector refactors (#1048/#1049/#1051) | **Ported.** `internal/sessiondiff` is a port of `diff_collector.py` / `diff_capture.py` / `git_excludes.py` at upstream HEAD (all five commits folded together): the git-backed collector (baseline reachability check, raw/numstat parsing, untracked and index-delete overlay handling, submodule and mode metadata, binary/too-large/metadata-only render states, per-file and per-bundle byte ceilings with largest-patch-first shedding), the `git_excludes` filter for runtime-owned untracked assets, the coalescing `Worker` (generation bookkeeping, prompt idle gate, staleness discard, 404 → permanently unsupported, failure reporting), and the `Client` for `PUT /sessions/{id}/diff` + `POST .../diff/failure`. Wired into the bridge: `refresh_diff` command, prompt start/finish hooks, `repositories` on the ready event, and a 5 s bounded flush on shutdown. The install side of `git_excludes` (which writes the managed block) belongs to the un-ported boot orchestrator; baseline resolution is a port-specific addition (see the divergence note). |
 | `97f6aeb8` managed skills (#1449) + `b8c757b2` managed-skills rollout cleanup (#1459) | **Ported.** `internal/skills` is a port of `managed_skills.py` at upstream HEAD (both commits folded together): fetch (bearer, session-scoped URL, 3 attempts, 15 s, 32 MiB cap), local re-validation of the installation DTO, discovery-root name-collision scan, and the journalled same-filesystem swap install with `0400`/`0500` modes. Wired into `bridge run-opencode` (see the divergence note below), which is this port's stand-in for the supervisor step `await self.managed_skills.materialize(...)`. |
+| `01a77eda` extract `BufferedEventForwarder` from the bridge (#1058) | Excluded — a behavior-preserving Python refactor (send/buffer/flush/ack machinery moves from `bridge.py` into `event_forwarder.py`; log names, ack-id scheme, eviction policy and the 1000-event cap all unchanged). The Go port already has that seam in `internal/bridge/send.go`, covered by `send_test.go`. It stays a file rather than a type because the buffer shares `b.mu` with the connection — coder/websocket permits a single writer, so giving the forwarder its own lock would be a regression. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `4df9a705`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `01a77eda`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
