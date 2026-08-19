@@ -92,12 +92,13 @@ between still need review):
 | `f1e4318c` Remove dead legacy callback-signing token generator (#1282) | Excluded — deletes `generate_internal_token` from `sandbox_runtime/auth/internal.py` (and its re-export) now that image-build callbacks sign with the newer scheme. The whole `auth/` package is un-ported: this bridge authenticates to the control plane with its own credential, has no `MODAL_API_SECRET`, and serves no inbound endpoints to verify tokens for. The rest of the commit is `packages/modal-infra`. |
 | `fbf38818` Require completion fields at image-build callback boundary (#1284) | Excluded — image-build mode only, in the un-ported boot orchestrator (same reason as `97580a25`). `RepoImageBuildCallback.from_env` now raises `RepoImageCallbackMisconfigured` when only some `OI_REPO_IMAGE_*` variables are set, so a partial build aborts at boot instead of running with completion reporting off and wedging the control-plane row in `building`; `base_sha` also leaves `report_success` and `RepositoryBootResult`, derived control-plane side from `repository_shas`. This port has no image-build mode and no supervisor. |
 | `20ca3db4` Draft mode policy for pull requests (#1285) | **Partially ported** — the draft policy itself is a control-plane/web feature (org and repo SCM settings, a new settings UI). The `draft` tool arg was already ported from `80f986bc`; what landed here is the delta over it. The description now tells the agent to set `draft` only on an explicit request and otherwise omit it, since passing `false` fights a policy that requires drafts. And the success message reports the created PR's `state` — "in draft mode" vs "now ready for review" — instead of claiming ready-for-review unconditionally, which is wrong whenever policy forced a draft. |
+| `a22e3fc1` Consolidate image-build sandbox env assembly (#1287) | Excluded — image-build only (same family as `97580a25`/`fbf38818`). The control plane and the Modal provider had each grown their own copy of the `OI_REPO_IMAGE_*` callback environment; this puts both on one assembly point. The only in-scope path is a new `image_build_callback_env.json`, a fixture pinning the key names that, by its own description, only tests read. This port has no image-build mode and none of those variables. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `20ca3db4`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `a22e3fc1`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
