@@ -34,8 +34,8 @@ func TestBuildPromptRequestBody(t *testing.T) {
 		},
 		// Grok carries reasoning as a top-level variant, with no model options.
 		{
-			"xai", "xai/grok-build-0.1", "high",
-			`{"messageID":"msg_x","model":{"modelID":"grok-build-0.1","providerID":"xai"},"parts":[{"text":"hi","type":"text"}],"variant":"high"}`,
+			"xai", "xai/grok-4.5", "high",
+			`{"messageID":"msg_x","model":{"modelID":"grok-4.5","providerID":"xai"},"parts":[{"text":"hi","type":"text"}],"variant":"high"}`,
 		},
 		{
 			"model_no_effort", "anthropic/claude-opus-4-8", "",
