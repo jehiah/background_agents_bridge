@@ -403,10 +403,11 @@ func (b *AgentBridge) dispatchSSE(ctx context.Context, s *streamState, ev sseEve
 				msg = "Sub-task error"
 			}
 			b.log.Error("bridge.child_session_error", "error_msg", msg, "child_session_id", esid)
-			// A child can fail before the parent's task part announced it. Hold
-			// the error until the Task call is known so it nests under the right
-			// one; the flush at stream end is the backstop.
-			taskCallID := s.childActivity.activeTask(esid)
+			// A child can fail before the parent's task part announced it, or
+			// after that task completed. Hold the error until the Task call is
+			// known so it nests under the right one; the flush at stream end is
+			// the backstop.
+			taskCallID := s.childActivity.taskForActivity(esid)
 			if taskCallID == "" {
 				if !s.childActivity.queueError(esid, msg) {
 					b.logPendingChildDrop(s)

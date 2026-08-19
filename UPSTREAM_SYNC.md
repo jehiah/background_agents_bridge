@@ -87,12 +87,13 @@ between still need review):
 | `97580a25` Modal image-build lifecycle fixes (#1249) | Excluded — entirely `entrypoint.py` and a new `modal_image_build_start.py`, both belonging to the un-ported boot orchestrator (same reason as `ec02a9a6`/`8cd3a46c`). Modal image builds now run in the sandbox's main process and take their callback token off stdin (`--await-modal-image-build-token-stdin-v1`) rather than from the environment, signal handling moves to a shutdown event that cancels the build cleanly, and hook `output_tail` is redacted in build mode. This port has no image-build mode and no supervisor. |
 | `142fff4e` Nest child activity under Task calls (#1252) | **Ported** — the runtime half. A new `childActivityCorrelator` (`internal/bridge/childactivity.go`) owns the Task-call ↔ child-session binding, so `tool_call` and `error` events from a sub-task carry `childSessionId` and `taskCallId`, and the parent's own `task` tool_call carries `childSessionId`. Child activity seen before the parent's task part is now held (bounded at 2000) instead of forwarded uncorrelated, and released when that part names its Task call; anything still held is flushed at every stream exit. The tool dedupe key gained the child session so a task part re-emitted once its child is known is not suppressed. The control-plane and web nesting UI is out of scope. |
 | `b1d98cd6` Distinguish subtasks from child sessions (#1258) | **Ported** — the `spawn-child` tool description now names 'sub-agent'/'subagent'/'sub-task'/'subtask' as *not* requests for a child session (they mean in-process task delegation), and says "suggest using a child session" instead of the ambiguous "using one". Text only; a `toolgen` test pins the wording. |
+| `ca95ed36` Fix folding for delayed child task events (#1259) | **Ported.** A child session's closed Task call is now remembered by id, so activity that trails a completed task nests under it instead of being flushed uncorrelated, and an already-bound message stays bound when the child session is resumed under a new task. Most of this arrived early: `childActivityCorrelator` was written against upstream's post-`ca95ed36` file, so the `142fff4e` row above covers the correlator half. What landed here is the consumer change — the child `session.error` branch calls `taskForActivity` rather than `activeTask` — plus the correlator and stream tests for a late error and a resumed task. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `b1d98cd6`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `ca95ed36`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

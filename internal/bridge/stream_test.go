@@ -312,6 +312,35 @@ func TestStreamChildErrorHeldUntilTask(t *testing.T) {
 	}
 }
 
+// TestStreamChildErrorAfterTaskCompletes verifies an error that trails a
+// finished task is emitted at once, nested under that task, rather than being
+// held for a Task call that will never come.
+func TestStreamChildErrorAfterTaskCompletes(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "tool", "tool": "task", "callID": "tc1", "messageID": "msg_p", "sessionID": "ses_parent",
+			"metadata": map[string]any{"sessionId": "ses_child"},
+			"state":    map[string]any{"status": "completed", "input": map[string]any{"prompt": "go"}},
+		},
+	}, c.emit)
+	feed(t, b, s, "session.error", map[string]any{
+		"sessionID": "ses_child",
+		"error":     map[string]any{"data": map[string]any{"message": "late boom"}},
+	}, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"error"}) {
+		t.Fatalf("expected the child error, got %v", got)
+	}
+	e := c.events[0]
+	if e["error"] != "late boom" || e["childSessionId"] != "ses_child" || e["taskCallId"] != "tc1" {
+		t.Errorf("late child error not nested: %+v", e)
+	}
+}
+
 // TestStreamParentErrorStops verifies a parent session error emits an error
 // event and stops the stream.
 func TestStreamParentErrorStops(t *testing.T) {

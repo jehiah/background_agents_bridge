@@ -32,6 +32,47 @@ func TestChildActivityCorrelatesAndKeepsOwnership(t *testing.T) {
 	}
 }
 
+// TestChildActivityLateMessageKeepsCompletedTask verifies a child message first
+// seen after its Task call completed still nests under that task rather than
+// being queued and flushed uncorrelated.
+func TestChildActivityLateMessageKeepsCompletedTask(t *testing.T) {
+	c := newChildActivityCorrelator()
+	c.associate("child-1", "task-1")
+	c.closeTask("task-1")
+
+	if d := c.authorizeOrQueueMessage("child-1", "late-message"); d != messageAuthorized {
+		t.Fatalf("disposition = %v, want authorized", d)
+	}
+	if got := c.taskForMessage("late-message"); got != "task-1" {
+		t.Errorf("taskForMessage = %q, want task-1", got)
+	}
+}
+
+// TestChildActivityResumeKeepsPriorMessageOwnership verifies a resumed child
+// session routes new messages to the new task without moving the old ones.
+func TestChildActivityResumeKeepsPriorMessageOwnership(t *testing.T) {
+	c := newChildActivityCorrelator()
+	c.associate("child-1", "task-1")
+	c.closeTask("task-1")
+	c.authorizeOrQueueMessage("child-1", "late-message")
+
+	c.associate("child-1", "task-2")
+
+	if d := c.authorizeOrQueueMessage("child-1", "resumed-message"); d != messageAuthorized {
+		t.Fatalf("resumed disposition = %v, want authorized", d)
+	}
+	// The already-bound message stays authorized under its original task.
+	if d := c.authorizeOrQueueMessage("child-1", "late-message"); d != messageAuthorized {
+		t.Fatalf("late disposition = %v, want authorized", d)
+	}
+	if got := c.taskForMessage("late-message"); got != "task-1" {
+		t.Errorf("late-message owner = %q, want task-1", got)
+	}
+	if got := c.taskForMessage("resumed-message"); got != "task-2" {
+		t.Errorf("resumed-message owner = %q, want task-2", got)
+	}
+}
+
 // TestChildActivityNotReassignedToResumedTask verifies activity queued after a
 // task closed is never attributed to the next task the same child gets bound
 // to: it belonged to neither, so it is emitted uncorrelated.
