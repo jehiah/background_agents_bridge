@@ -96,11 +96,13 @@ between still need review):
 | `01173a3f` Show context compaction in session timeline (#1328) | **Ported** — a `context_compacted` event is emitted when the parent session compacts, so the timeline can explain the gap where the assistant's context was rebuilt instead of leaving it unaccounted for. Everything else is consumer-side (shared event schema, web timeline row, reducer). |
 | `1ab63510` Add parent-to-child follow-up prompts (#1214) | **Ported** — a new `send-child-prompt` tool queues a follow-up in a direct child (`POST /children/{id}/prompt`), reporting the queued message id and distinguishing not-found / not-resumable / rate-limited from other failures. `get-child-status` now labels the final response as "Latest completed response (newer prompt queued or running)" when the control plane reports `hasUnfinishedPrompt`, so a stale answer is not read as the answer to the follow-up. Control-plane-side queueing and admission are out of scope. |
 
+| `746a8594` Sandbox desktop streaming with VNC (#1332) | Excluded — the in-scope change is an opt-in Xvfb/fluxbox/x11vnc/websockify sidecar stack in `entrypoint.py` (plus its port/password constants and `test_vnc_supervisor.py`), which belongs to the un-ported boot orchestrator. The supervisor pops `VNC_PASSWORD` from the environment before spawning any child, writes it 3DES-obfuscated to a mode-0600 rfbauth file, sets `DISPLAY` so agent-launched GUI processes land on the shared display, and restarts the stack best-effort. Everything else is control plane, providers, and web UI. This port runs no sidecars. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `1ab63510`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `746a8594`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
