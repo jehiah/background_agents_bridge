@@ -198,8 +198,12 @@ func TestStreamCompactionAuthorizes(t *testing.T) {
 		"part": map[string]any{"type": "text", "id": "p1", "messageID": "msg_post", "sessionID": "ses_parent", "text": "after"},
 	}, c.emit)
 
-	if got := c.types(); !equalStrings(got, []string{"token"}) {
+	// Compaction itself is announced, so the timeline can show the gap.
+	if got := c.types(); !equalStrings(got, []string{"context_compacted", "token"}) {
 		t.Fatalf("expected token after compaction, got %v", got)
+	}
+	if c.events[0]["messageId"] != "cp-msg" {
+		t.Errorf("context_compacted messageId = %q", c.events[0]["messageId"])
 	}
 }
 
@@ -462,7 +466,9 @@ func TestStreamContextOverflowCompacts(t *testing.T) {
 		t.Fatal("expected stop=true on parent idle")
 	}
 
-	if got := c.types(); !equalStrings(got, []string{"token"}) {
+	// The overflow announcement stays swallowed; only the compaction marker and
+	// the post-compaction token reach the user.
+	if got := c.types(); !equalStrings(got, []string{"context_compacted", "token"}) {
 		t.Fatalf("expected only the post-compaction token, got %v", got)
 	}
 }

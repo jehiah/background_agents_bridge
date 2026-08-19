@@ -104,6 +104,12 @@ func stepFinishEvent(cost, tokens, reason any, messageID string) event {
 	}
 }
 
+// contextCompactedEvent marks where OpenCode rebuilt the session context. It
+// gives the timeline something to show for the gap compaction leaves behind.
+func contextCompactedEvent(messageID string) event {
+	return event{"type": "context_compacted", "messageId": messageID}
+}
+
 func sessionTitleEvent(title string) event {
 	return event{"type": "session_title", "title": title}
 }

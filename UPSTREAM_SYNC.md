@@ -93,12 +93,13 @@ between still need review):
 | `fbf38818` Require completion fields at image-build callback boundary (#1284) | Excluded — image-build mode only, in the un-ported boot orchestrator (same reason as `97580a25`). `RepoImageBuildCallback.from_env` now raises `RepoImageCallbackMisconfigured` when only some `OI_REPO_IMAGE_*` variables are set, so a partial build aborts at boot instead of running with completion reporting off and wedging the control-plane row in `building`; `base_sha` also leaves `report_success` and `RepositoryBootResult`, derived control-plane side from `repository_shas`. This port has no image-build mode and no supervisor. |
 | `20ca3db4` Draft mode policy for pull requests (#1285) | **Partially ported** — the draft policy itself is a control-plane/web feature (org and repo SCM settings, a new settings UI). The `draft` tool arg was already ported from `80f986bc`; what landed here is the delta over it. The description now tells the agent to set `draft` only on an explicit request and otherwise omit it, since passing `false` fights a policy that requires drafts. And the success message reports the created PR's `state` — "in draft mode" vs "now ready for review" — instead of claiming ready-for-review unconditionally, which is wrong whenever policy forced a draft. |
 | `a22e3fc1` Consolidate image-build sandbox env assembly (#1287) | Excluded — image-build only (same family as `97580a25`/`fbf38818`). The control plane and the Modal provider had each grown their own copy of the `OI_REPO_IMAGE_*` callback environment; this puts both on one assembly point. The only in-scope path is a new `image_build_callback_env.json`, a fixture pinning the key names that, by its own description, only tests read. This port has no image-build mode and none of those variables. |
+| `01173a3f` Show context compaction in session timeline (#1328) | **Ported** — a `context_compacted` event is emitted when the parent session compacts, so the timeline can explain the gap where the assistant's context was rebuilt instead of leaving it unaccounted for. Everything else is consumer-side (shared event schema, web timeline row, reducer). |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `a22e3fc1`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `01173a3f`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

@@ -422,6 +422,7 @@ func (b *AgentBridge) dispatchSSE(ctx context.Context, s *streamState, ev sseEve
 			s.compactionOccurred = true
 			s.pendingOverflowError = ""
 			b.log.Info("bridge.session_compacted", "message_id", s.messageID)
+			emit(contextCompactedEvent(s.messageID))
 		}
 	}
 	return false, nil
