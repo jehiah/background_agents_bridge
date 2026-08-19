@@ -26,7 +26,12 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
+	"github.com/jehiah/background_agents_bridge/internal/sessiondiff"
 )
+
+// diffRefreshShutdownTimeout bounds how long shutdown waits for an in-flight
+// session diff refresh, mirroring DIFF_REFRESH_SHUTDOWN_TIMEOUT_SECONDS.
+const diffRefreshShutdownTimeout = 5 * time.Second
 
 // errSessionTerminated is returned when the control plane has terminated the
 // session (HTTP 401/403/404/410). It is non-recoverable: the bridge exits
@@ -46,6 +51,10 @@ type AgentBridge struct {
 	sseInactivityTimeout time.Duration
 	httpClient           *http.Client
 	ids                  *identifier
+
+	// diffRefresh coalesces terminal prompts into one durable-diff-viewer
+	// refresh of the idle checkout.
+	diffRefresh *sessiondiff.Worker
 
 	sessionIDFile    string
 	workspacePath    string
@@ -104,6 +113,11 @@ func New(sandboxID, sessionID, controlPlaneURL, authToken string, opencodePort i
 	)
 	// No global client timeout: SSE streaming needs an unbounded read. Per-call
 	// timeouts are applied via context; the dialer keeps a connect timeout.
+	b.diffRefresh = sessiondiff.NewWorker(
+		sessiondiff.NewClient(controlPlaneURL, sessionID, authToken),
+		b.repoManifestPath,
+		log,
+	)
 	b.httpClient = &http.Client{
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{Timeout: httpConnectTimeout}).DialContext,
@@ -129,6 +143,7 @@ func (b *AgentBridge) Run(parent context.Context) error {
 
 	b.log.Info("bridge.run_start")
 	b.loadSessionID(ctx)
+	b.diffRefresh.Start(ctx)
 
 	// The terminal summary: how the run ended plus the lifetime aggregates.
 	// runOutcome is reset per iteration so a failure that a later reconnect
@@ -190,6 +205,9 @@ func (b *AgentBridge) Run(parent context.Context) error {
 	}
 
 	b.cancelPrompt()
+	// Give a refresh collected just before shutdown a bounded chance to land, so
+	// the viewer is not left showing the state from the previous prompt.
+	b.diffRefresh.Close(diffRefreshShutdownTimeout)
 	return nil
 }
 

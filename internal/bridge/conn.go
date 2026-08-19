@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/coder/websocket"
+
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
 
 // connectAndRun establishes a control-plane connection and processes commands
@@ -52,7 +54,7 @@ func (b *AgentBridge) connectAndRun(ctx context.Context) error {
 	b.log.Info("bridge.connect", append([]any{"outcome", "success"}, b.aggregateFields()...)...)
 
 	// Announce readiness, then replay anything buffered/unacked across the gap.
-	b.sendEvent(readyEvent(b.getOpencodeSessionID()))
+	b.sendEvent(readyEvent(b.getOpencodeSessionID(), repomanifest.Load(b.repoManifestPath)))
 	b.drainBootWarnings()
 	justFlushed := b.flushEventBuffer()
 	b.flushPendingAcks(justFlushed)

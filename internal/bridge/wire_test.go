@@ -2,7 +2,10 @@ package bridge
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
 
 // marshalStable serializes an event after dropping non-deterministic fields so
@@ -27,8 +30,17 @@ func TestEventWireFormat(t *testing.T) {
 		ev   event
 		want string
 	}{
-		{"ready_unset", readyEvent(""), `{"opencodeSessionId":null,"type":"ready"}`},
-		{"ready_set", readyEvent("ses_x"), `{"opencodeSessionId":"ses_x","type":"ready"}`},
+		{"ready_unset", readyEvent("", nil), `{"opencodeSessionId":null,"repositories":[],"type":"ready"}`},
+		{"ready_set", readyEvent("ses_x", nil), `{"opencodeSessionId":"ses_x","repositories":[],"type":"ready"}`},
+		{
+			"ready_repositories",
+			readyEvent("ses_x", []repomanifest.Entry{
+				{Owner: "acme", Name: "web", BaseSHA: strings.Repeat("a", 40)},
+				{Owner: "acme", Name: "api"},
+			}),
+			`{"opencodeSessionId":"ses_x","repositories":[{"baseSha":"` + strings.Repeat("a", 40) +
+				`","position":0,"repoName":"web","repoOwner":"acme"}],"type":"ready"}`,
+		},
 		{"heartbeat", heartbeatEvent("ready"), `{"status":"ready","type":"heartbeat"}`},
 		{"token", tokenEvent("hi", "m1"), `{"content":"hi","messageId":"m1","type":"token"}`},
 		{

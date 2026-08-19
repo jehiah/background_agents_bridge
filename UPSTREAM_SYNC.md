@@ -24,8 +24,9 @@ been reflected in (or deliberately excluded from) this Go port.
 
 > **This port is out of sync.** Roughly 56 upstream commits touch the relevant
 > paths after `5308371d`, and features are being ported out of order as they are
-> needed (see *Ported ahead of the sync point*) — most recently managed skills
-> (`97f6aeb8`/`b8c757b2`), which is far ahead of the sync point. Treat the hash
+> needed (see *Ported ahead of the sync point*) — most recently the durable
+> session diff viewer (`4df9a705` and its follow-ups) and managed skills
+> (`97f6aeb8`/`b8c757b2`), both ahead of the sync point. Treat the hash
 > above as the last *exhaustive* review, not as the port's feature level. A
 > follow-up pass will walk the intervening commits and re-sync the rest.
 
@@ -61,13 +62,14 @@ still need review):
 
 | Upstream | Disposition |
 | -------- | ----------- |
+| `4df9a705` durable session diff viewer (#1036) + `5c351a8a` exclude runtime assets (#1044) + `d2d2a075`/`33db62d4`/`836fd351` collector refactors (#1048/#1049/#1051) | **Ported.** `internal/sessiondiff` is a port of `diff_collector.py` / `diff_capture.py` / `git_excludes.py` at upstream HEAD (all five commits folded together): the git-backed collector (baseline reachability check, raw/numstat parsing, untracked and index-delete overlay handling, submodule and mode metadata, binary/too-large/metadata-only render states, per-file and per-bundle byte ceilings with largest-patch-first shedding), the `git_excludes` filter for runtime-owned untracked assets, the coalescing `Worker` (generation bookkeeping, prompt idle gate, staleness discard, 404 → permanently unsupported, failure reporting), and the `Client` for `PUT /sessions/{id}/diff` + `POST .../diff/failure`. Wired into the bridge: `refresh_diff` command, prompt start/finish hooks, `repositories` on the ready event, and a 5 s bounded flush on shutdown. The install side of `git_excludes` (which writes the managed block) belongs to the un-ported boot orchestrator; baseline resolution is a port-specific addition (see the divergence note). |
 | `97f6aeb8` managed skills (#1449) + `b8c757b2` managed-skills rollout cleanup (#1459) | **Ported.** `internal/skills` is a port of `managed_skills.py` at upstream HEAD (both commits folded together): fetch (bearer, session-scoped URL, 3 attempts, 15 s, 32 MiB cap), local re-validation of the installation DTO, discovery-root name-collision scan, and the journalled same-filesystem swap install with `0400`/`0500` modes. Wired into `bridge run-opencode` (see the divergence note below), which is this port's stand-in for the supervisor step `await self.managed_skills.materialize(...)`. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| `4df9a705` durable session diff viewer (#1036) | Next in line. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `4df9a705`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
@@ -113,6 +115,30 @@ the newest reviewed commit and note any deliberate divergences below.
   error's text unlogged anywhere for the first two outcomes; the Go port keeps it
   on the terminal summary rather than reintroducing a log line. Everything else
   about the event set matches upstream.
+- **Session diff baselines are resolved by the bridge, not the supervisor.**
+  Upstream carries `base_sha` on every `RepoEntry`, written by `entrypoint.py`
+  when it boots the checkouts. This port has no boot orchestrator, so the
+  baseline arrives through the VM instead: the control plane's
+  `SESSION_CONFIG.repositories` is persisted verbatim to
+  `/etc/oi/repositories.json` and passed through into `/tmp/oi-repo-manifest.json`
+  (extra keys survive the jq transform), and `repomanifest.Entry` accepts either
+  `base_sha` or `baseSha`, dropping anything that is not a full object name. When
+  an entry still has no baseline, `bridge run-opencode` resolves the checkout's
+  `HEAD` once at boot (`sessiondiff.ResolveBaselines`) and writes it back to both
+  files, so a resumed session keeps the original baseline instead of re-anchoring
+  to the agent's own commits. The startup script only passes the list along; all
+  of the logic lives here.
+- **The diff worker is one long-lived goroutine**, not a respawned asyncio task.
+  Upstream creates a task per request and re-creates it if a request lands during
+  task teardown; the Go worker is woken by a buffered channel, which removes that
+  race by construction. Shutdown work runs on a context detached from the
+  bridge's, so `Close`'s 5 s window can actually finish an in-flight upload.
+- **Bundle JSON is not ASCII-escaped.** The Python encoder uses
+  `ensure_ascii=True`; the Go encoder emits UTF-8 directly, so the bundle-size
+  ceiling is measured against the bytes actually uploaded. Patch text is decoded
+  from git with per-invalid-byte U+FFFD replacement, matching Python's
+  `errors="replace"`, so the two ports agree on patch content and length for
+  valid UTF-8.
 - **`create-pull-request` description** still names `__BRIDGE_DEFAULT_REPO_DIR__`
   (the primary checkout), whereas upstream dropped the path from the description.
   Kept as a Go-port-specific hint; the `repo` arg overrides it for multi-repo

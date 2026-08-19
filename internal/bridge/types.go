@@ -3,6 +3,8 @@ package bridge
 import (
 	"maps"
 	"time"
+
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
 
 // event is an outbound message to the control plane. It is modeled as a plain
@@ -42,8 +44,28 @@ func nullable(s string) any {
 // None of these set sandboxId or timestamp; sendEvent stamps those (and ackId
 // for critical events) just before transmission, matching _send_event.
 
-func readyEvent(opencodeSessionID string) event {
-	return event{"type": "ready", "opencodeSessionId": nullable(opencodeSessionID)}
+// readyEvent announces the handshake. repositories tells the control plane
+// which checkouts have a session diff baseline (and what it is), so the viewer
+// knows what the sandbox will be diffing against; an entry without a baseline
+// is omitted rather than sent as null.
+func readyEvent(opencodeSessionID string, repositories []repomanifest.Entry) event {
+	entries := []any{}
+	for position, repository := range repositories {
+		if repository.BaseSHA == "" {
+			continue
+		}
+		entries = append(entries, map[string]any{
+			"position":  position,
+			"repoOwner": repository.Owner,
+			"repoName":  repository.Name,
+			"baseSha":   repository.BaseSHA,
+		})
+	}
+	return event{
+		"type":              "ready",
+		"opencodeSessionId": nullable(opencodeSessionID),
+		"repositories":      entries,
+	}
 }
 
 func heartbeatEvent(status string) event {

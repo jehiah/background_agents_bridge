@@ -89,6 +89,17 @@ destination follows OpenCode's own rules: `$OPENCODE_CONFIG_DIR`, else
 the boot rather than start opencode against an unverified skills tree. Skills are
 installed once per boot — opencode restarts reuse the tree.
 
+Also before opencode starts, this mode resolves any missing **session diff
+baseline**. The baseline is the commit each checkout is compared against for the
+lifetime of the session; the control plane normally supplies it per repository
+(`base_sha` in `SESSION_CONFIG.repositories`, which the VM persists to
+`/etc/oi/repositories.json` and passes through into the repo manifest). When an
+entry has none, the bridge reads the checkout's `HEAD` once — before the agent
+can commit anything — and writes it back into both the manifest and the
+persisted list, so a resumed session keeps the original baseline. A checkout
+whose HEAD cannot be read is left without one and is reported as unavailable in
+the diff instead of blocking the boot.
+
 The short-lived modes (`git-credential`, `tool`) are spawned by git and OpenCode
 rather than run by hand; they resolve their configuration from the inherited
 environment (`CONTROL_PLANE_URL`, `SANDBOX_AUTH_TOKEN`, `SESSION_ID` /
@@ -158,6 +169,11 @@ gcloud compute instances create bridge-vm \
   credential helper and OpenCode tool files.
 - `internal/bridge` — the `connect-opencode`-mode WebSocket bridge (reconnect loop,
   heartbeat, event forwarding, command handling, git identity + push).
+- `internal/sessiondiff` — the durable session diff viewer: the git-backed
+  collector (bounded per-file patches against the session baseline), the
+  coalescing refresh worker (one upload per idle terminal prompt, plus the
+  control plane's `refresh_diff` command), the diff endpoint client, and the
+  boot-time baseline resolution above.
 - `internal/skills` — control-plane-managed OpenCode skills: fetch, local
   validation of the untrusted installation document, discovery-root collision
   checks, and the journalled atomic install (`run-opencode` boot step).

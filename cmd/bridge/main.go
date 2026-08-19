@@ -7,11 +7,12 @@
 //	                                    git-credential and tool helpers below and
 //	                                    waits for the opencode TCP port to accept
 //	                                    connections before dialing the bridge
-//	bridge run-opencode [flags]         install the session's control-plane
-//	                                    managed skills, run `opencode serve` as a
-//	                                    subprocess, and then chain into
-//	                                    connect-opencode so a single command
-//	                                    supervises both
+//	bridge run-opencode [flags]         resolve any missing session diff
+//	                                    baselines, install the session's
+//	                                    control-plane managed skills, run
+//	                                    `opencode serve` as a subprocess, and then
+//	                                    chain into connect-opencode so a single
+//	                                    command supervises both
 //	bridge git-credential <get|...>     git credential helper (brokers SCM tokens)
 //	bridge tool <name>                  execute one OpenCode tool (args JSON on
 //	                                    stdin, result on stdout)
@@ -38,7 +39,9 @@ import (
 	"syscall"
 
 	"github.com/jehiah/background_agents_bridge/internal/config"
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 	"github.com/jehiah/background_agents_bridge/internal/sandbox"
+	"github.com/jehiah/background_agents_bridge/internal/sessiondiff"
 	"github.com/jehiah/background_agents_bridge/internal/skills"
 	"golang.org/x/sync/errgroup"
 )
@@ -125,6 +128,15 @@ func runRunOpencode(argv []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Resolve the session diff baselines before opencode starts, so the viewer
+	// compares against the checkout as the session found it rather than against
+	// whatever the agent has already committed. A repository whose baseline the
+	// control plane already supplied is left alone; this only fills gaps.
+	sessiondiff.ResolveBaselines(ctx, repomanifest.ManifestPath, sessiondiff.RepositoryListPath,
+		slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()})).With(
+			"service", "sandbox", "component", "session_diff", "session_id", cfg.SessionID,
+		))
 
 	// Managed skills are boot work: install them before opencode starts so it
 	// discovers the complete tree, and fail the boot rather than run against a

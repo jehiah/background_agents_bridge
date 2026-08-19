@@ -64,3 +64,44 @@ func TestFindCaseInsensitiveCanonical(t *testing.T) {
 		t.Error("unexpected match for wrong name")
 	}
 }
+
+func TestLoadBaseSHA(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	// Either spelling is accepted; a baseline that is not a full object name is
+	// dropped so the bridge resolves a trustworthy one instead.
+	p := writeManifest(t, `{"repositories":[
+		{"repo_owner":"o","repo_name":"snake","base_sha":"`+sha+`"},
+		{"repo_owner":"o","repo_name":"camel","baseSha":"`+sha+`"},
+		{"repo_owner":"o","repo_name":"abbrev","base_sha":"0123456"},
+		{"repo_owner":"o","repo_name":"garbage","base_sha":"HEAD"},
+		{"repo_owner":"o","repo_name":"none"}
+	]}`)
+
+	got := Load(p)
+	want := []string{sha, sha, "", "", ""}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d entries, got %d", len(want), len(got))
+	}
+	for i, wantSHA := range want {
+		if got[i].BaseSHA != wantSHA {
+			t.Errorf("%s: base_sha = %q, want %q", got[i].Name, got[i].BaseSHA, wantSHA)
+		}
+	}
+}
+
+func TestIsObjectName(t *testing.T) {
+	cases := map[string]bool{
+		"0123456789abcdef0123456789abcdef01234567":                         true,
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": true,
+		// Uppercase is not what git rev-parse emits, and accepting it would let
+		// two spellings of one baseline through.
+		"0123456789ABCDEF0123456789abcdef01234567": false,
+		"0123456789abcdef0123456789abcdef0123456":  false,
+		"": false,
+	}
+	for value, want := range cases {
+		if got := IsObjectName(value); got != want {
+			t.Errorf("IsObjectName(%q) = %v, want %v", value, got, want)
+		}
+	}
+}
