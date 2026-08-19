@@ -36,23 +36,20 @@ type streamState struct {
 	opencodeMessageID string
 	opencodeSessionID string
 
-	cumulativeText         map[string]string
-	emittedToolStates      map[string]bool
-	allowedAssistantMsgIDs map[string]bool
-	userMessageIDs         map[string]bool
-	pendingParts           map[string][]pendingPart
-	pendingPartsTotal      int
-	pendingDropLogged      bool
-	compactionOccurred     bool
+	cumulativeText    map[string]string
+	emittedToolStates map[string]bool
+	pendingParts      map[string][]pendingPart
+	pendingPartsTotal int
+	pendingDropLogged bool
+
+	// attribution owns which OpenCode messages belong to this prompt.
+	attribution *messageAttribution
 
 	// childActivity owns which child sessions belong to this prompt, which Task
 	// call spawned each one, and any child output still waiting for that Task
 	// call to be announced.
 	childActivity *childActivityCorrelator
 
-	// correlatedCompactionSummaryIDs are the compaction summaries belonging to
-	// this prompt. Their text is never forwarded, but an error on one is.
-	correlatedCompactionSummaryIDs map[string]bool
 	// emittedErrorMessages deduplicates the parent error event, which can arrive
 	// as both a message.updated error and a session.error.
 	emittedErrorMessages map[string]bool
@@ -77,18 +74,15 @@ func isContextOverflow(e any) bool {
 // message id is pre-authorized so the assistant reply it parents is accepted.
 func newStreamState(messageID, ocMsgID, ocSessionID string) *streamState {
 	return &streamState{
-		messageID:              messageID,
-		opencodeMessageID:      ocMsgID,
-		opencodeSessionID:      ocSessionID,
-		cumulativeText:         map[string]string{},
-		emittedToolStates:      map[string]bool{},
-		allowedAssistantMsgIDs: map[string]bool{},
-		userMessageIDs:         map[string]bool{ocMsgID: true},
-		pendingParts:           map[string][]pendingPart{},
-		childActivity:          newChildActivityCorrelator(),
-
-		correlatedCompactionSummaryIDs: map[string]bool{},
-		emittedErrorMessages:           map[string]bool{},
+		messageID:            messageID,
+		opencodeMessageID:    ocMsgID,
+		opencodeSessionID:    ocSessionID,
+		cumulativeText:       map[string]string{},
+		emittedToolStates:    map[string]bool{},
+		pendingParts:         map[string][]pendingPart{},
+		attribution:          newMessageAttribution(ocMsgID),
+		childActivity:        newChildActivityCorrelator(),
+		emittedErrorMessages: map[string]bool{},
 	}
 }
 
@@ -419,7 +413,7 @@ func (b *AgentBridge) dispatchSSE(ctx context.Context, s *streamState, ev sseEve
 		}
 	case "session.compacted":
 		if gstr(props, "sessionID") == s.opencodeSessionID {
-			s.compactionOccurred = true
+			s.attribution.markCompacted()
 			s.pendingOverflowError = ""
 			b.log.Info("bridge.session_compacted", "message_id", s.messageID)
 			emit(contextCompactedEvent(s.messageID))
@@ -458,18 +452,6 @@ func (s *streamState) parentErrorEventOnce(err any) event {
 	return errorEvent(msg, s.messageID)
 }
 
-// compactionFallbackAccepts reports whether the post-compaction fallback may
-// claim an assistant message. Compaction rewrites the message chain, so parentID
-// correlation stops matching and acceptance falls back to unparented assistant
-// messages. OpenCode also reports the session's full history (over SSE and from
-// the message-list API), so the fallback has to be scoped to messages created
-// during this prompt or prior turns' output would be replayed as current output.
-// Ascending OpenCode IDs order by creation time, making an ID comparison against
-// this prompt's user message exactly that scope.
-func (s *streamState) compactionFallbackAccepts(ocMsgID string) bool {
-	return s.compactionOccurred && ocMsgID > s.opencodeMessageID
-}
-
 // handleMessageUpdated authorizes assistant messages (parent or child), surfaces
 // message-level errors, and replays any parts buffered before authorization.
 func (s *streamState) handleMessageUpdated(b *AgentBridge, props map[string]any, emit func(event)) {
@@ -480,31 +462,22 @@ func (s *streamState) handleMessageUpdated(b *AgentBridge, props map[string]any,
 
 	if msgSessionID == s.opencodeSessionID {
 		if role == "user" && ocMsgID != "" {
-			s.userMessageIDs[ocMsgID] = true
+			s.attribution.addUserMessage(ocMsgID)
 		}
-		parentMatches := s.userMessageIDs[gstr(info, "parentID")]
-		isCompactionSummary := info["summary"] == true
 		if role == "assistant" && ocMsgID != "" {
-			if isCompactionSummary && parentMatches {
-				s.correlatedCompactionSummaryIDs[ocMsgID] = true
-			}
+			disposition := s.attribution.assistantDisposition(
+				ocMsgID, gstr(info, "parentID"), info["summary"] == true)
 			// A message carrying an error still belongs to this prompt when it
 			// is one of our compaction summaries, even though its text never
 			// reaches the transcript. Emitting here puts the error in order with
 			// the surrounding token and step events.
-			belongsToPrompt := parentMatches || s.correlatedCompactionSummaryIDs[ocMsgID] ||
-				(!isCompactionSummary && s.compactionFallbackAccepts(ocMsgID))
-			if belongsToPrompt && truthy(info["error"]) {
+			if disposition != assistantReject && truthy(info["error"]) {
 				if e := s.parentErrorEventOnce(info["error"]); e != nil {
 					b.log.Error("bridge.message_error", "error_msg", e["error"], "oc_msg_id", ocMsgID)
 					emit(e)
 				}
 			}
-			// The compaction summary is internal context, not assistant output,
-			// and its parentID — the compaction user message — matches, so
-			// parentID alone cannot exclude it.
-			if !isCompactionSummary && (parentMatches || s.compactionFallbackAccepts(ocMsgID)) {
-				s.allowedAssistantMsgIDs[ocMsgID] = true
+			if disposition == assistantOutput {
 				for _, pp := range s.popPending(ocMsgID) {
 					for _, e := range s.handlePart(pp.part, pp.delta, false) {
 						emit(e)
@@ -531,7 +504,7 @@ func (s *streamState) handleMessageUpdated(b *AgentBridge, props map[string]any,
 // drainChildMessage authorizes a child assistant message and replays whatever
 // parts of it were buffered while it was unauthorized.
 func (s *streamState) drainChildMessage(ocMsgID string, emit func(event)) {
-	s.allowedAssistantMsgIDs[ocMsgID] = true
+	s.attribution.allowAssistant(ocMsgID)
 	for _, pp := range s.popPending(ocMsgID) {
 		for _, e := range s.handlePart(pp.part, pp.delta, true) {
 			emit(e)
@@ -571,7 +544,7 @@ func (s *streamState) handlePartUpdated(b *AgentBridge, props map[string]any, em
 		}
 	}
 
-	if s.allowedAssistantMsgIDs[ocMsgID] {
+	if s.attribution.isAssistantAllowed(ocMsgID) {
 		isSubtask := s.childActivity.isTracked(partSessionID)
 		for _, e := range s.handlePart(part, delta, isSubtask) {
 			emit(e)
@@ -747,19 +720,15 @@ func (b *AgentBridge) fetchFinalMessageState(ctx context.Context, s *streamState
 		if gstr(info, "role") != "assistant" {
 			continue
 		}
+		// The same attribution rules as the live stream: a compaction summary is
+		// never accepted here (its text is internal context), and the
+		// post-compaction fallback is limited to messages created after this
+		// prompt's user message, since this list is the whole session history and
+		// a prior turn's text would otherwise overwrite this prompt's answer.
 		msgID := gstr(info, "id")
-		parentMatches := s.userMessageIDs[gstr(info, "parentID")]
-		inTracked := s.allowedAssistantMsgIDs[msgID]
-		// The compaction fallback is limited to messages created after this
-		// prompt's user message: the API returns the whole session history, and
-		// re-emitting a prior turn's text here would overwrite this prompt's
-		// final output with a stale message. The compaction summary is never
-		// accepted: its text is internal context, and its parentID (the
-		// compaction user message) matches.
-		isCompactionSummary := info["summary"] == true
-		shouldAccept := !isCompactionSummary &&
-			(parentMatches || inTracked || s.compactionFallbackAccepts(msgID))
-		if !shouldAccept {
+		disposition := s.attribution.assistantDisposition(
+			msgID, gstr(info, "parentID"), info["summary"] == true)
+		if disposition != assistantOutput {
 			continue
 		}
 		parts, _ := msg["parts"].([]any)

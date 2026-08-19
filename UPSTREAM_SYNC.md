@@ -104,11 +104,13 @@ between still need review):
 
 | `e89fb209` Scope post-compaction message acceptance to the active prompt (#1385) | **Ported** — compaction rewrites the message chain, so parentID correlation stops matching and acceptance falls back to any non-summary assistant message. OpenCode reports the session's whole history over SSE and from the message-list API, so that fallback was claiming prior turns: their text replayed as current output, and the final-state reconciliation pass backfilled a stale answer over this prompt's real one. All three sites now go through `compactionFallbackAccepts`, which requires the message id to sort after this prompt's user message — OpenCode ids ascend by creation time, so that is exactly "created during this prompt". An error on a prior-turn message is scoped out the same way. Tests build ids with the real `identifier` encoding rather than ad-hoc strings, so the boundary cases (including the same-millisecond counter tick) are meaningful. |
 
+| `b3491348` Extract OpenCode message attribution (#1389) | **Ported** — a refactor with no behaviour change. The per-prompt acceptance rules (user-message ids, allowed assistants, correlated compaction summaries, the compacted flag, and the post-prompt id comparison) move out of `streamState` into a `messageAttribution` type in `internal/bridge/attribution.go`. Its `assistantDisposition` folds the duplicated conditions at both call sites — the live stream and the final-state reconciliation pass — into one three-way answer: reject, error-only (a correlated summary, whose error is surfaced but whose text is not), or output. `idIsAfter` sits next to `identifier` so the ordering comparison reads as intent. Worth taking rather than skipping: `e89fb209` had to fix the same condition in three places. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `e89fb209`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `b3491348`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

@@ -61,9 +61,7 @@ func ocMessageID(timestampMs, counter int64, suffix byte) string {
 // testStreamStateAt builds a stream state whose prompt user message is the given
 // OpenCode ID, for tests that depend on ID ordering.
 func testStreamStateAt(opencodeMessageID string) *streamState {
-	s := newStreamState("cp-msg", opencodeMessageID, "ses_parent")
-	s.userMessageIDs[opencodeMessageID] = true
-	return s
+	return newStreamState("cp-msg", opencodeMessageID, "ses_parent")
 }
 
 // TestOCMessageIDMatchesRealGeneratorFormat keeps the fixture helper honest: the
@@ -132,7 +130,7 @@ func TestStreamToolDedup(t *testing.T) {
 	b := testBridge()
 	s := testStreamState()
 	c := &collector{}
-	s.allowedAssistantMsgIDs["msg_a"] = true
+	s.attribution.allowAssistant("msg_a")
 
 	toolEvent := map[string]any{
 		"part": map[string]any{
@@ -239,7 +237,7 @@ func TestStreamCompactionAuthorizes(t *testing.T) {
 	postID := ocMessageID(promptTSMs+5_000, 1, 'r')
 
 	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
-	if !s.compactionOccurred {
+	if !s.attribution.compactionOccurred {
 		t.Fatal("compactionOccurred not set")
 	}
 	feed(t, b, s, "message.updated", map[string]any{
@@ -318,7 +316,7 @@ func TestStreamTaskToolCarriesChildSession(t *testing.T) {
 	b := testBridge()
 	s := testStreamState()
 	c := &collector{}
-	s.allowedAssistantMsgIDs["msg_p"] = true
+	s.attribution.allowAssistant("msg_p")
 
 	feed(t, b, s, "message.part.updated", map[string]any{
 		"part": map[string]any{
@@ -648,10 +646,10 @@ func TestStreamCompactionSummaryNotForwarded(t *testing.T) {
 		},
 	}, c.emit)
 
-	if s.allowedAssistantMsgIDs["msg_summary"] {
+	if s.attribution.isAssistantAllowed("msg_summary") {
 		t.Error("compaction summary was authorized as assistant output")
 	}
-	if !s.correlatedCompactionSummaryIDs["msg_summary"] {
+	if !s.attribution.correlatedSummaryIDs["msg_summary"] {
 		t.Error("compaction summary was not correlated to the prompt")
 	}
 	if len(c.events) != 0 {
@@ -695,7 +693,7 @@ func TestStreamCompactionFallbackSkipsPriorPromptMessage(t *testing.T) {
 		},
 	}, c.emit)
 
-	if s.allowedAssistantMsgIDs[priorAssistantID] {
+	if s.attribution.isAssistantAllowed(priorAssistantID) {
 		t.Error("prior-turn message was authorized")
 	}
 	if len(s.pendingParts[priorAssistantID]) != 1 {
@@ -730,7 +728,7 @@ func TestStreamCompactionFallbackAcceptsLaterMessage(t *testing.T) {
 		},
 	}, c.emit)
 
-	if !s.allowedAssistantMsgIDs[continuationID] {
+	if !s.attribution.isAssistantAllowed(continuationID) {
 		t.Fatal("continuation message was not authorized")
 	}
 	if got := c.types(); !equalStrings(got, []string{"context_compacted", "token"}) {
@@ -761,10 +759,10 @@ func TestStreamCompactionFallbackCounterBoundary(t *testing.T) {
 		}, c.emit)
 	}
 
-	if s.allowedAssistantMsgIDs[belowID] {
+	if s.attribution.isAssistantAllowed(belowID) {
 		t.Error("message one counter tick below the prompt was authorized")
 	}
-	if !s.allowedAssistantMsgIDs[aboveID] {
+	if !s.attribution.isAssistantAllowed(aboveID) {
 		t.Error("message one counter tick above the prompt was not authorized")
 	}
 }
@@ -817,7 +815,7 @@ func TestFetchFinalMessageStateSkipsPriorPromptMessage(t *testing.T) {
 	b.setOpencodeSessionID("ses_parent")
 
 	s := testStreamStateAt(promptUserMsgID)
-	s.compactionOccurred = true
+	s.attribution.markCompacted()
 	c := &collector{}
 	b.fetchFinalMessageState(t.Context(), s, c.emit)
 
@@ -859,7 +857,7 @@ func TestFetchFinalMessageStateSkipsCompactionSummary(t *testing.T) {
 	b.setOpencodeSessionID("ses_parent")
 
 	s := testStreamStateAt(promptUserMsgID)
-	s.compactionOccurred = true
+	s.attribution.markCompacted()
 	c := &collector{}
 	b.fetchFinalMessageState(t.Context(), s, c.emit)
 

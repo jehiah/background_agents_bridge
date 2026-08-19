@@ -75,6 +75,12 @@ func (id *identifier) ascending(kind string) (string, error) {
 	return prefix + "_" + hex.EncodeToString(buf) + suffix, nil
 }
 
+// idIsAfter reports whether one ascending ID was created after another. The
+// timestamp-then-counter encoding makes creation order a plain string order.
+func idIsAfter(candidate, boundary string) bool {
+	return candidate > boundary
+}
+
 // randomBase62 returns a cryptographically random base62 string of length n.
 func randomBase62(n int) (string, error) {
 	out := make([]byte, n)
