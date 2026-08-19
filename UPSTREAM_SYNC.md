@@ -14,16 +14,16 @@ paths are relevant:
 ## In sync through
 
 ```
-80f986bc34200313b971ef42f5c97fcd05d9ee23
-feat: PR request draft mode setting
-2026-07-14
+f20cdf11f3776236dd9b8aafcee2c4296d996973
+fix: preserve output when SSE stream drops (#1009)
+2026-07-15
 ```
 
 All upstream changes to the relevant paths **at or before** this commit have
 been reflected in (or deliberately excluded from) this Go port.
 
-> **This port is out of sync.** Roughly 60 upstream commits touch the relevant
-> paths after `80f986bc`, and features are being ported out of order as they are
+> **This port is out of sync.** Roughly 59 upstream commits touch the relevant
+> paths after `f20cdf11`, and features are being ported out of order as they are
 > needed (see *Ported ahead of the sync point*) — most recently managed skills
 > (`97f6aeb8`/`b8c757b2`), which is far ahead of the sync point. Treat the hash
 > above as the last *exhaustive* review, not as the port's feature level. A
@@ -48,10 +48,11 @@ Commits since the previous sync point (`7c0a3ab`), with disposition:
 | `66d0bd3b` discourage unnecessary child sessions (#999) | **Ported** — `spawn-task` description updated. |
 | `886e2585` nested repository identities end to end (#1000) | **Ported** (sandbox-runtime scope) — `create-pull-request` `repo` arg with last-`/` nested-owner parsing + manifest canonicalization. |
 | `80f986bc` PR request draft mode setting | **Ported** — optional `draft` arg forwarded to `/pr` only when set. |
+| `f20cdf11` preserve output when SSE stream drops (#1009) | **Ported** — `onStreamTransportError` in `internal/bridge/stream.go` flushes `fetchFinalMessageState` before failing, and the failure is now the stable `sseDisconnectError` message instead of the raw read error (logged as `bridge.sse_transport_error`). Applies to both the event-stream connect failure and a mid-stream drop. |
 
 ### Ported ahead of the sync point
 
-These landed upstream **after** `80f986bc` but were ported out of order (so the
+These landed upstream **after** `f20cdf11` but were ported out of order (so the
 "in sync through" hash above is not yet bumped past them — the commits between
 still need review):
 
@@ -60,11 +61,10 @@ still need review):
 | `5f5d54fb` portable session image attachments (#1019) | **Ported.** `internal/bridge/attachments.go` parses `cmd.attachments`, hydrates images from `GET /sessions/{id}/attachments/{id}` (bearer auth, ≤6/msg, ≤10 MiB, no-redirect, concurrency 2) and appends OpenCode `file` parts after the text part; invalid/failed items surface a `warning`/`media` event. |
 | `97f6aeb8` managed skills (#1449) + `b8c757b2` managed-skills rollout cleanup (#1459) | **Ported.** `internal/skills` is a port of `managed_skills.py` at upstream HEAD (both commits folded together): fetch (bearer, session-scoped URL, 3 attempts, 15 s, 32 MiB cap), local re-validation of the installation DTO, discovery-root name-collision scan, and the journalled same-filesystem swap install with `0400`/`0500` modes. Wired into `bridge run-opencode` (see the divergence note below), which is this port's stand-in for the supervisor step `await self.managed_skills.materialize(...)`. |
 
-### Pending review (after `80f986bc`, not yet ported)
+### Pending review (after `f20cdf11`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| `f20cdf11` preserve output when SSE stream drops (#1009) | Bridge SSE handling — likely relevant to `internal/bridge/stream.go`; **review**. |
 | `26a4c77c` fix terminal observability gaps (#1017) | Check for bridge-relevant logging changes. |
 | `5308371d` slack: attach generated media to completion threads (#1022) | Control-plane / slack-bot outbound media — not the sandbox bridge path; likely **excluded**. |
 | `4147972b` PR request draft mode setting | Same draft feature already ported (branch re-commit); no action. |

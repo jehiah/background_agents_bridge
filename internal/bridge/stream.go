@@ -103,7 +103,7 @@ func (b *AgentBridge) streamOpencodeResponse(
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("SSE read error: %w", err)
+		return b.onStreamTransportError(ctx, s, emit, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -168,11 +168,36 @@ func (b *AgentBridge) streamOpencodeResponse(
 	case readErr != nil && ctx.Err() != nil:
 		return ctx.Err()
 	case readErr != nil:
-		return fmt.Errorf("SSE read error: %w", readErr)
+		return b.onStreamTransportError(ctx, s, emit, readErr)
 	default:
 		return nil
 	}
 }
+
+// onStreamTransportError handles the event stream dropping mid-response: flush
+// whatever OpenCode already persisted for this prompt, then fail with a stable
+// message. Without the flush, a disconnect after the assistant had produced text
+// loses that text — OpenCode has it, but the tokens never reach the user.
+//
+// The returned message deliberately omits the transport detail (it is logged
+// instead): it reaches the user via execution_complete, where a raw read error
+// says nothing useful. Port of the httpx.TransportError handler in bridge.py
+// (upstream #1009).
+func (b *AgentBridge) onStreamTransportError(ctx context.Context, s *streamState, emit func(event), cause error) error {
+	b.log.Error("bridge.sse_transport_error", "exc", cause, "message_id", s.messageID)
+	b.fetchFinalMessageState(ctx, s, emit)
+	return &sseDisconnectError{cause: cause}
+}
+
+// sseDisconnectError is the user-facing verdict for a dropped event stream; the
+// transport cause stays reachable through errors.Is/As.
+type sseDisconnectError struct{ cause error }
+
+func (e *sseDisconnectError) Error() string {
+	return "OpenCode event stream disconnected before completion; partial output was preserved when available."
+}
+
+func (e *sseDisconnectError) Unwrap() error { return e.cause }
 
 // onStreamInactivity handles an SSE inactivity timeout: abort OpenCode, flush any
 // final state, and return a descriptive error.
