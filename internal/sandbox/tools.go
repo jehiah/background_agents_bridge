@@ -296,9 +296,10 @@ func firstRepoDir() string {
 
 func runSpawnChild(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	result, err := c.SpawnChild(ctx, controlplane.SpawnChildRequest{
-		Title:  argStr(args, "title"),
-		Prompt: argStr(args, "prompt"),
-		Model:  argStr(args, "model"),
+		Title:     argStr(args, "title"),
+		Prompt:    argStr(args, "prompt"),
+		Model:     argStr(args, "model"),
+		Reasoning: argStrPtr(args, "reasoning"),
 	})
 	if err != nil {
 		if e, ok := apiErr(err); ok {

@@ -14,6 +14,10 @@ export default tool({
       .string()
       .optional()
       .describe("Override the LLM model for the child. Must use 'provider/model' format (e.g. 'anthropic/claude-sonnet-4-6', 'openai/gpt-5.4'). Defaults to the parent's model."),
+    reasoning: z
+      .string()
+      .optional()
+      .describe("Overrides the reasoning effort for the child. Defaults to the parent's reasoning effort."),
   },
   async execute(args) {
     return await runBridgeTool("spawn-child", args);

@@ -12,6 +12,10 @@ type SpawnChildRequest struct {
 	Title  string
 	Prompt string
 	Model  string // optional; defaults to the parent's model
+	// Reasoning overrides the child's reasoning effort. nil omits the field so
+	// the child inherits the parent's; a non-nil pointer is always sent, so ""
+	// reaches the control plane as an explicit value rather than an omission.
+	Reasoning *string
 }
 
 // SpawnChildResult identifies the spawned child session.
@@ -25,6 +29,9 @@ func (c *Client) SpawnChild(ctx context.Context, req SpawnChildRequest) (SpawnCh
 	payload := map[string]any{"title": req.Title, "prompt": req.Prompt}
 	if req.Model != "" {
 		payload["model"] = req.Model
+	}
+	if req.Reasoning != nil {
+		payload["reasoningEffort"] = *req.Reasoning
 	}
 	var out SpawnChildResult
 	if err := c.doJSON(ctx, "POST", "/children", payload, &out); err != nil {

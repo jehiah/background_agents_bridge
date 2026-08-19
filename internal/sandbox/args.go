@@ -31,6 +31,17 @@ func argStr(args map[string]any, key string) string {
 	return ""
 }
 
+// argStrPtr returns a pointer to a string-valued arg, or nil when the key is
+// absent (or not a string). Unlike argStr it keeps an explicit "" distinct from
+// "not supplied", so callers can forward the empty string on the wire instead of
+// dropping the field.
+func argStrPtr(args map[string]any, key string) *string {
+	if s, ok := args[key].(string); ok {
+		return &s
+	}
+	return nil
+}
+
 func argBool(args map[string]any, key string) bool {
 	b, _ := args[key].(bool)
 	return b

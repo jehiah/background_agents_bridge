@@ -108,6 +108,38 @@ func TestRunSpawnChild(t *testing.T) {
 	}
 }
 
+// TestRunSpawnChildReasoning verifies the optional reasoning override reaches
+// the control plane as reasoningEffort, and that an unset arg is omitted rather
+// than sent as "" — the child inherits the parent's effort only when the field
+// is absent, so an explicit empty string must stay distinguishable.
+func TestRunSpawnChildReasoning(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     map[string]any
+		wantBody string
+	}{
+		{"set", map[string]any{"title": "t", "prompt": "p", "reasoning": "high"}, `{"prompt":"p","reasoningEffort":"high","title":"t"}`},
+		{"empty", map[string]any{"title": "t", "prompt": "p", "reasoning": ""}, `{"prompt":"p","reasoningEffort":"","title":"t"}`},
+		{"absent", map[string]any{"title": "t", "prompt": "p"}, `{"prompt":"p","title":"t"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody string
+			c := cpClient(t, func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				gotBody = strings.TrimSpace(string(body))
+				_, _ = w.Write([]byte(`{"sessionId":"child-9","status":"created"}`))
+			})
+			if got := runSpawnChild(context.Background(), c, tc.args); !strings.Contains(got, "child-9") {
+				t.Fatalf("got %q", got)
+			}
+			if gotBody != tc.wantBody {
+				t.Errorf("body = %s, want %s", gotBody, tc.wantBody)
+			}
+		})
+	}
+}
+
 func TestRunSpawnChildForbidden(t *testing.T) {
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
