@@ -264,6 +264,48 @@ func TestWorkerIgnoresRequestsAfterClose(t *testing.T) {
 	}
 }
 
+// Close waits only for work that is actually in flight: an idle worker stops as
+// soon as it observes the closed flag, rather than sitting out the whole
+// shutdown budget.
+func TestWorkerCloseReturnsWhenIdle(t *testing.T) {
+	w := newTestWorker(t, &fakeUploader{}, readyBundle)
+
+	start := time.Now()
+	w.Close(10 * time.Second)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Close took %s while idle, want a prompt return", elapsed)
+	}
+}
+
+// A collection already under way when Close arrives still gets to upload,
+// which is the reason Close has a timeout at all.
+func TestWorkerCloseWaitsForInFlightRefresh(t *testing.T) {
+	client := &fakeUploader{}
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	w := newTestWorker(t, client, func(ctx context.Context, repositories []repomanifest.Entry,
+		triggerMessageID *string, capturedAt int64, limits Limits) (*Bundle, error) {
+		once.Do(func() { close(started) })
+		<-release
+		return readyBundle(ctx, repositories, triggerMessageID, capturedAt, limits)
+	})
+
+	w.Request(nil)
+	<-started
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		w.Close(10 * time.Second)
+	}()
+	close(release)
+	<-closed
+
+	if got := len(client.uploaded()); got != 1 {
+		t.Errorf("uploaded %d bundles, want the in-flight one to land", got)
+	}
+}
+
 func TestWorkerSkipsEmptyManifest(t *testing.T) {
 	client := &fakeUploader{}
 	manifest := filepath.Join(t.TempDir(), "manifest.json")

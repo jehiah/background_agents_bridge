@@ -2,11 +2,12 @@ package skills
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -84,7 +85,7 @@ func (m *Materializer) Materialize(ctx context.Context, repositories []repomanif
 // asManagedError keeps a coded *Error as-is and labels anything else
 // install_failed, so callers always see a stable code.
 func asManagedError(err error) error {
-	if managed, ok := err.(*Error); ok {
+	if managed, ok := errors.AsType[*Error](err); ok {
 		return managed
 	}
 	return wrapError("install_failed", err, "failed to install managed skills: %v", err)
@@ -115,7 +116,7 @@ func (m *Materializer) checkCollisions(installation *Installation, repositories 
 				}
 			}
 			if len(collisions) > 0 {
-				sort.Strings(collisions)
+				slices.Sort(collisions)
 				return newError("name_collision", "managed skill %q collides with discovered skill at %s", collisions[0], child)
 			}
 		}
@@ -168,14 +169,13 @@ func skillNames(skillDir string) map[string]bool {
 	if err != nil {
 		return names
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	// The frontmatter is at the top; a bounded read keeps a huge file cheap.
-	buffer := make([]byte, 65536)
-	read, err := file.Read(buffer)
-	if err != nil && read == 0 {
+	buffer, err := io.ReadAll(io.LimitReader(file, 65536))
+	if err != nil && len(buffer) == 0 {
 		return names
 	}
-	content := string(buffer[:read])
+	content := string(buffer)
 	if !strings.HasPrefix(content, "---\n") {
 		return names
 	}
@@ -322,7 +322,7 @@ func writeSkillFile(path string, file File) error {
 	if err != nil {
 		return err
 	}
-	defer handle.Close()
+	defer func() { _ = handle.Close() }()
 	if _, err := handle.WriteString(file.Content); err != nil {
 		return err
 	}
@@ -353,7 +353,7 @@ func writeJournal(journal string) error {
 	}
 	name := temporary.Name()
 	if err := temporary.Sync(); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return err
 	}
 	if err := temporary.Close(); err != nil {
@@ -396,6 +396,6 @@ func fsyncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer handle.Close()
+	defer func() { _ = handle.Close() }()
 	return handle.Sync()
 }

@@ -15,7 +15,7 @@ func TestClientUsesSessionURLAndSandboxBearerAuth(t *testing.T) {
 		// containing "/" must show up percent-encoded.
 		gotPath = r.RequestURI
 		gotAuth = r.Header.Get("Authorization")
-		w.Write([]byte(`{"schemaVersion":1}`))
+		_, _ = w.Write([]byte(`{"schemaVersion":1}`))
 	}))
 	defer server.Close()
 
@@ -43,7 +43,7 @@ func TestClientRetriesTransientFetchFailures(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer server.Close()
 
@@ -101,7 +101,7 @@ func TestClientRejectsOversizedResponseWithoutRetrying(t *testing.T) {
 		// the body is streamed rather than buffered whole by the test server.
 		chunk := strings.Repeat("x", 1<<20)
 		for written := 0; written <= MaxManagedSkillResponseBytes; written += len(chunk) {
-			w.Write([]byte(chunk))
+			_, _ = w.Write([]byte(chunk))
 		}
 	}))
 	defer server.Close()

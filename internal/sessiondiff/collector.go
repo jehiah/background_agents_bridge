@@ -536,9 +536,7 @@ func (c *collector) untrackedStats(ctx context.Context, path string) (lineStats,
 	line, _, _ := bytes.Cut(raw, []byte("\n"))
 	columns := bytes.SplitN(line, []byte("\t"), 3)
 	if len(columns) < 2 {
-		zero := 0
-		zeroToo := 0
-		return lineStats{additions: &zero, deletions: &zeroToo}, nil
+		return zeroStats(), nil
 	}
 	return parseStatColumns(columns[0], columns[1])
 }

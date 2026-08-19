@@ -45,11 +45,11 @@ func TestStreamTransportDropPreservesFinalOutput(t *testing.T) {
 			panic(http.ErrAbortHandler)
 		case strings.HasSuffix(r.URL.Path, "/prompt_async"):
 			promptID <- promptMessageID(r)
-			w.Write([]byte(`{}`))
+			_, _ = w.Write([]byte(`{}`))
 		case strings.HasSuffix(r.URL.Path, "/message"):
 			parent := <-promptID
 			promptID <- parent
-			json.NewEncoder(w).Encode([]map[string]any{{
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
 				"info": map[string]any{
 					"id": "oc-msg-1", "role": "assistant", "parentID": parent, "sessionID": "ses_test",
 				},
@@ -94,9 +94,9 @@ func TestStreamTransportDropWithoutRecoverableOutput(t *testing.T) {
 			writeSSEEvents(w, map[string]any{"type": "server.connected"})
 			panic(http.ErrAbortHandler)
 		case strings.HasSuffix(r.URL.Path, "/prompt_async"):
-			w.Write([]byte(`{}`))
+			_, _ = w.Write([]byte(`{}`))
 		case strings.HasSuffix(r.URL.Path, "/message"):
-			w.Write([]byte(`[]`))
+			_, _ = w.Write([]byte(`[]`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -126,7 +126,7 @@ func promptMessageID(r *http.Request) string {
 	var body struct {
 		MessageID string `json:"messageID"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body)
 	return body.MessageID
 }
 
@@ -135,7 +135,7 @@ func writeSSEEvents(w http.ResponseWriter, payloads ...map[string]any) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	for _, payload := range payloads {
 		data, _ := json.Marshal(payload)
-		w.Write([]byte("data: " + string(data) + "\n\n"))
+		_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
 	}
 	w.(http.Flusher).Flush()
 }

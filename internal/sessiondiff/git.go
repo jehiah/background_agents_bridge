@@ -101,7 +101,7 @@ func (c *collector) runGit(ctx context.Context, dir string, opts gitOptions, arg
 		return nil, errOutputTooLarge
 	}
 	if err != nil {
-		if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, errorf("Git command timed out for %s", c.name)
 		}
 		var exitErr *exec.ExitError

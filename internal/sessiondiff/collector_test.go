@@ -96,7 +96,7 @@ func TestCollectBundleCapturesWorkingState(t *testing.T) {
 	// by a commit (the baseline is the session start, not HEAD).
 	repo.write("edit.txt", "one\ntwo\n")
 	repo.commit("committed edit")
-	os.Remove(filepath.Join(repo.dir, "gone.txt"))
+	_ = os.Remove(filepath.Join(repo.dir, "gone.txt"))
 	repo.git("rm", "--quiet", "gone.txt")
 	repo.git("mv", "old-name.txt", "new-name.txt")
 	repo.write("added.txt", "brand new\n")

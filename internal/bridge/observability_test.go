@@ -117,7 +117,7 @@ func TestRunCompleteDoesNotRetainTransientOutcome(t *testing.T) {
 			return
 		}
 		if connections.Add(1) == 1 {
-			conn.Close(websocket.StatusInternalError, "server going away")
+			_ = conn.Close(websocket.StatusInternalError, "server going away")
 			return
 		}
 		<-r.Context().Done() // hold the reconnect open until the bridge leaves

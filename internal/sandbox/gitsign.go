@@ -160,7 +160,7 @@ func readBoundedFile(path string, limit int, description string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("Unable to read %s", description) //nolint:staticcheck // ST1005: surfaced to the agent
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	content, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
 	if err != nil {
@@ -194,7 +194,7 @@ func requestSignature(cfg config.Resolved, keyFingerprint string, payload []byte
 	if err != nil {
 		return nil, failed
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxSigningResponseBytes+1))
 	if err != nil {
@@ -234,14 +234,14 @@ func writeSignatureFile(path string, content []byte) error {
 	if err != nil {
 		return failed
 	}
-	defer os.Remove(temporary.Name()) // no-op once the rename below succeeds
+	defer func() { _ = os.Remove(temporary.Name()) }() // no-op once the rename below succeeds
 
 	if _, err := temporary.Write(content); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return failed
 	}
 	if err := temporary.Sync(); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return failed
 	}
 	if err := temporary.Close(); err != nil {

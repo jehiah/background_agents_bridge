@@ -175,7 +175,20 @@ func (w *Worker) run(ctx, workCtx context.Context) {
 				return
 			}
 		}
+		// Close wakes the loop after setting the flag; returning here (rather
+		// than waiting for ctx) is what lets it stop as soon as the settle it
+		// was giving time to has finished.
+		if w.stopped() {
+			return
+		}
 	}
+}
+
+// stopped reports whether Close has been called.
+func (w *Worker) stopped() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closed
 }
 
 // pending reports whether a requested refresh has not settled yet.

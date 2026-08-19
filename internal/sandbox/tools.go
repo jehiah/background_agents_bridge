@@ -348,7 +348,7 @@ func runSpawnChild(ctx context.Context, c *controlplane.Client, args map[string]
 	}, "\n")
 }
 
-// --- cancel-child ------------------------------------------------------------
+// --- send-child-prompt -------------------------------------------------------
 
 // runSendChildPrompt queues a follow-up prompt in a direct child session. The
 // control plane admits it behind the child's current work, so the tool reports
@@ -378,6 +378,8 @@ func runSendChildPrompt(ctx context.Context, c *controlplane.Client, args map[st
 		"The prompt will run after any current child work. Use get-child-status when you need the result.",
 	}, "\n")
 }
+
+// --- cancel-child ------------------------------------------------------------
 
 func runCancelChild(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	childID := argStr(args, "childId")

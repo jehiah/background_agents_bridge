@@ -86,7 +86,7 @@ func (c *Client) send(ctx context.Context, method, url string, body []byte) (Out
 	if err != nil {
 		return OutcomeAccepted, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return OutcomeUnsupported, nil
 	}

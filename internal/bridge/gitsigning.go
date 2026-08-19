@@ -93,7 +93,7 @@ func (b *AgentBridge) fetchSigningConfig(ctx context.Context) (signingConfig, er
 	if err != nil {
 		return signingConfig{}, unavailable
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode == http.StatusNotFound {
 		b.log.Debug("git.signing_unsupported")

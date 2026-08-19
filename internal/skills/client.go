@@ -90,7 +90,7 @@ func (c *Client) fetchOnce(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &statusError{StatusCode: resp.StatusCode}
 	}

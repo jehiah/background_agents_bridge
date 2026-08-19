@@ -37,15 +37,19 @@ type Entry struct {
 	BaseSHA string `json:"base_sha,omitempty"`
 }
 
-// entryJSON mirrors Entry for decoding, adding the camelCase spelling of
-// base_sha that the control plane's TypeScript config uses.
+// entryJSON mirrors Entry for decoding. `base_sha` is the spelling every
+// producer on this path uses (SESSION_CONFIG.repositories, the persisted
+// /etc/oi/repositories.json, and the manifest itself); `baseSha` is accepted
+// only as a tolerance for the camelCase spelling the control plane uses
+// internally, so a serializer that ever forgets the snake_case conversion does
+// not silently cost the session its baseline.
 type entryJSON struct {
-	Owner       string `json:"repo_owner"`
-	Name        string `json:"repo_name"`
-	Branch      string `json:"branch"`
-	Path        string `json:"path"`
-	BaseSHA     string `json:"base_sha"`
-	BaseSHACaml string `json:"baseSha"`
+	Owner        string `json:"repo_owner"`
+	Name         string `json:"repo_name"`
+	Branch       string `json:"branch"`
+	Path         string `json:"path"`
+	BaseSHA      string `json:"base_sha"`
+	BaseSHACamel string `json:"baseSha"`
 }
 
 // UnmarshalJSON accepts either spelling of the baseline field and drops a
@@ -58,7 +62,7 @@ func (e *Entry) UnmarshalJSON(raw []byte) error {
 	}
 	baseSHA := decoded.BaseSHA
 	if baseSHA == "" {
-		baseSHA = decoded.BaseSHACaml
+		baseSHA = decoded.BaseSHACamel
 	}
 	if !IsObjectName(baseSHA) {
 		baseSHA = ""

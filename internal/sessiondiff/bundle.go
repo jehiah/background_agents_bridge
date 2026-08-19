@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -169,7 +170,8 @@ func boundEncodedBundle(bundle *Bundle, maxBundleBytes int) error {
 			}
 		}
 	}
-	sortDescBySize(patches, func(p patchRef) int { return p.size })
+	// Largest patch first, stably, so equal-sized patches shed in bundle order.
+	slices.SortStableFunc(patches, func(a, b patchRef) int { return b.size - a.size })
 
 	for _, ref := range patches {
 		if len(encodeBundle(bundle)) <= maxBundleBytes {
@@ -205,14 +207,4 @@ func boundEncodedBundle(bundle *Bundle, maxBundleBytes int) error {
 		return errorf("Session diff metadata exceeded the bundle limit")
 	}
 	return nil
-}
-
-// sortDescBySize orders items by key descending (insertion sort: the slice is
-// bounded by MaxFiles and is nearly always tiny).
-func sortDescBySize[T any](items []T, key func(T) int) {
-	for i := 1; i < len(items); i++ {
-		for j := i; j > 0 && key(items[j]) > key(items[j-1]); j-- {
-			items[j], items[j-1] = items[j-1], items[j]
-		}
-	}
 }
