@@ -1,8 +1,10 @@
 package repomanifest
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,6 +88,47 @@ func TestLoadBaseSHA(t *testing.T) {
 		if got[i].BaseSHA != wantSHA {
 			t.Errorf("%s: base_sha = %q, want %q", got[i].Name, got[i].BaseSHA, wantSHA)
 		}
+	}
+}
+
+// Entry marshals every field once, with the baseline under both spellings, and
+// reads its own output back unchanged.
+func TestEntryRoundTrip(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	entry := Entry{Owner: "o", Name: "web", Branch: "main", Path: "/workspace/web", BaseSHA: sha}
+
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(encoded, &generic); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, key := range []string{"base_sha", "baseSha"} {
+		if generic[key] != sha {
+			t.Errorf("%s = %v, want %q", key, generic[key], sha)
+		}
+	}
+	if len(generic) != 6 {
+		t.Errorf("unexpected key set %v", generic)
+	}
+
+	var decoded Entry
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded != entry {
+		t.Errorf("round trip = %+v, want %+v", decoded, entry)
+	}
+
+	// An entry without a baseline carries neither spelling.
+	encoded, err = json.Marshal(Entry{Owner: "o", Name: "web"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "aseSha") || strings.Contains(string(encoded), "base_sha") {
+		t.Errorf("empty baseline serialized: %s", encoded)
 	}
 }
 

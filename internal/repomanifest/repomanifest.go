@@ -37,44 +37,46 @@ type Entry struct {
 	BaseSHA string `json:"base_sha,omitempty"`
 }
 
-// entryJSON mirrors Entry for decoding. `base_sha` is the spelling every
-// producer on this path uses (SESSION_CONFIG.repositories, the persisted
-// /etc/oi/repositories.json, and the manifest itself); `baseSha` is accepted
-// only as a tolerance for the camelCase spelling the control plane uses
-// internally, so a serializer that ever forgets the snake_case conversion does
-// not silently cost the session its baseline.
-type entryJSON struct {
-	Owner        string `json:"repo_owner"`
-	Name         string `json:"repo_name"`
-	Branch       string `json:"branch"`
-	Path         string `json:"path"`
-	BaseSHA      string `json:"base_sha"`
-	BaseSHACamel string `json:"baseSha"`
+// entryFields is Entry stripped of its JSON methods, so the shims below can
+// embed the whole field set instead of restating it (and without recursing
+// back into those methods). A field added to Entry needs no change here.
+type entryFields Entry
+
+// baselineCamel carries the camelCase spelling of the baseline alongside the
+// embedded canonical fields. `base_sha` is what every producer on this path
+// actually sends — SESSION_CONFIG.repositories, the persisted
+// /etc/oi/repositories.json, and the manifest — while `baseSha` is the
+// spelling the control plane uses internally; accepting and emitting both
+// means a serializer that skips the snake_case conversion cannot silently cost
+// the session its baseline. It is the only place the two spellings meet, and
+// it holds no state of its own: Entry.BaseSHA remains the single field.
+type baselineCamel struct {
+	entryFields
+	BaseSHACamel string `json:"baseSha,omitempty"`
 }
 
 // UnmarshalJSON accepts either spelling of the baseline field and drops a
 // value that is not a full object name, so a malformed baseline degrades to
 // the bridge-side fallback instead of producing a diff against nothing.
 func (e *Entry) UnmarshalJSON(raw []byte) error {
-	var decoded entryJSON
+	var decoded baselineCamel
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return err
 	}
-	baseSHA := decoded.BaseSHA
-	if baseSHA == "" {
-		baseSHA = decoded.BaseSHACamel
+	*e = Entry(decoded.entryFields)
+	if e.BaseSHA == "" {
+		e.BaseSHA = decoded.BaseSHACamel
 	}
-	if !IsObjectName(baseSHA) {
-		baseSHA = ""
-	}
-	*e = Entry{
-		Owner:   decoded.Owner,
-		Name:    decoded.Name,
-		Branch:  decoded.Branch,
-		Path:    decoded.Path,
-		BaseSHA: baseSHA,
+	if !IsObjectName(e.BaseSHA) {
+		e.BaseSHA = ""
 	}
 	return nil
+}
+
+// MarshalJSON writes the baseline under both spellings, so a round trip
+// through this type is readable by either reader.
+func (e Entry) MarshalJSON() ([]byte, error) {
+	return json.Marshal(baselineCamel{entryFields: entryFields(e), BaseSHACamel: e.BaseSHA})
 }
 
 // IsObjectName reports whether value is a full lowercase SHA-1 or SHA-256
