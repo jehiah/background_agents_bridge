@@ -91,12 +91,13 @@ between still need review):
 | `d66615c0` Fix Task folding metadata extraction (#1260) | **Ported** — the child session id is read from the task part's tool *state* (`state.metadata.sessionId`), not the part itself, which is where OpenCode actually puts it. Without this the `task_metadata` discovery path never fired and no child was ever bound to a Task call. Upstream's tests also pin the sequencing this exposes: a foreground task publishes the metadata only on its *completed* state, after the child's own activity has streamed, so correlation always runs through the hold-then-release path from `142fff4e`. The port's tests were updated to the real shape. |
 | `f1e4318c` Remove dead legacy callback-signing token generator (#1282) | Excluded — deletes `generate_internal_token` from `sandbox_runtime/auth/internal.py` (and its re-export) now that image-build callbacks sign with the newer scheme. The whole `auth/` package is un-ported: this bridge authenticates to the control plane with its own credential, has no `MODAL_API_SECRET`, and serves no inbound endpoints to verify tokens for. The rest of the commit is `packages/modal-infra`. |
 | `fbf38818` Require completion fields at image-build callback boundary (#1284) | Excluded — image-build mode only, in the un-ported boot orchestrator (same reason as `97580a25`). `RepoImageBuildCallback.from_env` now raises `RepoImageCallbackMisconfigured` when only some `OI_REPO_IMAGE_*` variables are set, so a partial build aborts at boot instead of running with completion reporting off and wedging the control-plane row in `building`; `base_sha` also leaves `report_success` and `RepositoryBootResult`, derived control-plane side from `repository_shas`. This port has no image-build mode and no supervisor. |
+| `20ca3db4` Draft mode policy for pull requests (#1285) | **Partially ported** — the draft policy itself is a control-plane/web feature (org and repo SCM settings, a new settings UI). The `draft` tool arg was already ported from `80f986bc`; what landed here is the delta over it. The description now tells the agent to set `draft` only on an explicit request and otherwise omit it, since passing `false` fights a policy that requires drafts. And the success message reports the created PR's `state` — "in draft mode" vs "now ready for review" — instead of claiming ready-for-review unconditionally, which is wrong whenever policy forced a draft. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `fbf38818`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `20ca3db4`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

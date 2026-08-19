@@ -194,7 +194,18 @@ func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]an
 	if result.Manual() {
 		return fmt.Sprintf("Branch pushed successfully.\n\nCreate the pull request in GitHub:\n%s\n\nUse your logged-in GitHub account to finish creating the PR.", result.CreatePRURL)
 	}
-	return fmt.Sprintf("Pull request created successfully!\n\nPR #%d: %s\n\nThe PR is now ready for review.", result.PRNumber, result.PRURL)
+	return prSuccessMessage(result)
+}
+
+// prSuccessMessage reports the created PR and its state. Repository policy can
+// force a draft even when the agent did not ask for one, so the state has to
+// come from the response rather than from the request.
+func prSuccessMessage(result controlplane.PRResult) string {
+	status := "The pull request is now ready for review."
+	if result.State == "draft" {
+		status = "The pull request is in draft mode."
+	}
+	return fmt.Sprintf("Pull request created successfully!\n\nPR #%d: %s\n\n%s", result.PRNumber, result.PRURL, status)
 }
 
 // requireFeatureBranch returns a non-empty, agent-facing error when head is not

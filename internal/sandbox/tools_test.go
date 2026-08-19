@@ -46,6 +46,22 @@ func TestRunCreatePRSuccess(t *testing.T) {
 	if !strings.Contains(got, "PR #42") || !strings.Contains(got, "https://x/pr/42") {
 		t.Fatalf("got %q", got)
 	}
+	if !strings.Contains(got, "ready for review") {
+		t.Errorf("expected ready-for-review status, got %q", got)
+	}
+}
+
+// TestRunCreatePRDraftState verifies the reported status follows the created
+// PR, which repository policy can force to draft regardless of the request.
+func TestRunCreatePRDraftState(t *testing.T) {
+	stubBranch(t, "feature/x")
+	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"prNumber":42,"prUrl":"https://x/pr/42","state":"draft"}`))
+	})
+	got := runCreatePR(context.Background(), c, map[string]any{"title": "T", "body": "B"})
+	if !strings.Contains(got, "in draft mode") {
+		t.Fatalf("got %q", got)
+	}
 }
 
 func TestRunCreatePRManual(t *testing.T) {
