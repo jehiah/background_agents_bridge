@@ -59,6 +59,23 @@ func (c *Client) ListChildren(ctx context.Context) ([]ChildSummary, error) {
 	return out.Children, nil
 }
 
+// SendChildPromptResult identifies the queued follow-up message.
+type SendChildPromptResult struct {
+	MessageID string `json:"messageId"`
+}
+
+// SendChildPrompt queues a follow-up prompt in a child session
+// (POST /children/{id}/prompt). The control plane admits it behind whatever the
+// child is already doing rather than interrupting the active turn.
+func (c *Client) SendChildPrompt(ctx context.Context, childID, content string) (SendChildPromptResult, error) {
+	var out SendChildPromptResult
+	body := map[string]any{"content": content}
+	if err := c.doJSON(ctx, "POST", "/children/"+url.PathEscape(childID)+"/prompt", body, &out); err != nil {
+		return SendChildPromptResult{}, err
+	}
+	return out, nil
+}
+
 // ChildDetailOptions selects optional sections of a child detail response.
 type ChildDetailOptions struct {
 	IncludeResponse   bool
@@ -75,6 +92,9 @@ type ChildDetail struct {
 	FinalResponse *FinalResponse `json:"finalResponse"`
 	Trajectory    *Trajectory    `json:"trajectory"`
 	RecentEvents  []Event        `json:"recentEvents"`
+	// HasUnfinishedPrompt reports that a newer prompt is queued or running, so
+	// FinalResponse answers an earlier one.
+	HasUnfinishedPrompt bool `json:"hasUnfinishedPrompt"`
 }
 
 // ChildSession is the core session metadata in a child detail.

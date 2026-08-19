@@ -34,6 +34,7 @@ var toolImpls = map[string]toolImpl{
 	"spawn-child":         {run: runSpawnChild},
 	"get-child-status":    {run: runGetChildStatus},
 	"cancel-child":        {run: runCancelChild},
+	"send-child-prompt":   {run: runSendChildPrompt},
 	"slack-notify":        {run: runSlackNotify, clientErr: slackClientErr},
 	"image-upload":        {run: runImageUpload},
 }
@@ -336,6 +337,35 @@ func runSpawnChild(ctx context.Context, c *controlplane.Client, args map[string]
 }
 
 // --- cancel-child ------------------------------------------------------------
+
+// runSendChildPrompt queues a follow-up prompt in a direct child session. The
+// control plane admits it behind the child's current work, so the tool reports
+// that the prompt is queued rather than answered.
+func runSendChildPrompt(ctx context.Context, c *controlplane.Client, args map[string]any) string {
+	childID := argStr(args, "childId")
+	result, err := c.SendChildPrompt(ctx, childID, argStr(args, "prompt"))
+	if err != nil {
+		if e, ok := apiErr(err); ok {
+			switch e.StatusCode {
+			case http.StatusNotFound:
+				return fmt.Sprintf("Child %q not found. Use get-child-status to list direct children.", childID)
+			case http.StatusConflict:
+				// The child is in a state it cannot resume from (cancelled or
+				// archived), not merely busy.
+				return fmt.Sprintf("Cannot prompt child %q: %s", childID, e.Display())
+			case http.StatusTooManyRequests:
+				return fmt.Sprintf("Cannot queue another prompt for child %q: %s", childID, e.Display())
+			}
+			return fmt.Sprintf("Failed to prompt child: %s (HTTP %d)", e.Display(), e.StatusCode)
+		}
+		return "Failed to prompt child: " + err.Error()
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("Follow-up durably queued for child %q.", childID),
+		"Message ID: " + result.MessageID,
+		"The prompt will run after any current child work. Use get-child-status when you need the result.",
+	}, "\n")
+}
 
 func runCancelChild(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	childID := argStr(args, "childId")

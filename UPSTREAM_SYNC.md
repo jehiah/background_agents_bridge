@@ -94,12 +94,13 @@ between still need review):
 | `20ca3db4` Draft mode policy for pull requests (#1285) | **Partially ported** — the draft policy itself is a control-plane/web feature (org and repo SCM settings, a new settings UI). The `draft` tool arg was already ported from `80f986bc`; what landed here is the delta over it. The description now tells the agent to set `draft` only on an explicit request and otherwise omit it, since passing `false` fights a policy that requires drafts. And the success message reports the created PR's `state` — "in draft mode" vs "now ready for review" — instead of claiming ready-for-review unconditionally, which is wrong whenever policy forced a draft. |
 | `a22e3fc1` Consolidate image-build sandbox env assembly (#1287) | Excluded — image-build only (same family as `97580a25`/`fbf38818`). The control plane and the Modal provider had each grown their own copy of the `OI_REPO_IMAGE_*` callback environment; this puts both on one assembly point. The only in-scope path is a new `image_build_callback_env.json`, a fixture pinning the key names that, by its own description, only tests read. This port has no image-build mode and none of those variables. |
 | `01173a3f` Show context compaction in session timeline (#1328) | **Ported** — a `context_compacted` event is emitted when the parent session compacts, so the timeline can explain the gap where the assistant's context was rebuilt instead of leaving it unaccounted for. Everything else is consumer-side (shared event schema, web timeline row, reducer). |
+| `1ab63510` Add parent-to-child follow-up prompts (#1214) | **Ported** — a new `send-child-prompt` tool queues a follow-up in a direct child (`POST /children/{id}/prompt`), reporting the queued message id and distinguishing not-found / not-resumable / rate-limited from other failures. `get-child-status` now labels the final response as "Latest completed response (newer prompt queued or running)" when the control plane reports `hasUnfinishedPrompt`, so a stale answer is not read as the answer to the follow-up. Control-plane-side queueing and admission are out of scope. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `01173a3f`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `1ab63510`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

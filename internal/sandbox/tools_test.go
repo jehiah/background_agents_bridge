@@ -222,6 +222,53 @@ func TestRunCancelChildNotFound(t *testing.T) {
 	}
 }
 
+func TestRunSendChildPrompt(t *testing.T) {
+	var gotPath, gotBody string
+	c := cpClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		b, _ := io.ReadAll(r.Body)
+		gotBody = strings.TrimSpace(string(b))
+		_, _ = w.Write([]byte(`{"messageId":"m-7"}`))
+	})
+	got := runSendChildPrompt(context.Background(), c, map[string]any{"childId": "c 1", "prompt": "again"})
+
+	if gotPath != "/sessions/sess-1/children/c%201/prompt" {
+		t.Errorf("path = %s", gotPath)
+	}
+	if gotBody != `{"content":"again"}` {
+		t.Errorf("body = %s", gotBody)
+	}
+	if !strings.Contains(got, `durably queued for child "c 1"`) || !strings.Contains(got, "Message ID: m-7") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// TestRunSendChildPromptErrors verifies each rejection the control plane can
+// return is explained in terms the agent can act on.
+func TestRunSendChildPromptErrors(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"not_found", http.StatusNotFound, `Child "c1" not found`},
+		{"unresumable", http.StatusConflict, `Cannot prompt child "c1"`},
+		{"queue_full", http.StatusTooManyRequests, `Cannot queue another prompt for child "c1"`},
+		{"other", http.StatusInternalServerError, "Failed to prompt child"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			})
+			got := runSendChildPrompt(context.Background(), c, map[string]any{"childId": "c1", "prompt": "p"})
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("got %q, want it to contain %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunSlackNotifySuccess(t *testing.T) {
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"ok":true,"channelId":"C1","messageTs":"123.45","permalink":"https://s/p"}`))
@@ -299,6 +346,23 @@ func TestRunGetChildStatusDetail(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}
+	}
+}
+
+func TestRunGetChildStatusUnfinishedPrompt(t *testing.T) {
+	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"session":{"id":"c1","status":"active"},
+			"hasUnfinishedPrompt":true,
+			"finalResponse":{"success":true,"textContent":"older answer"}
+		}`))
+	})
+	got := runGetChildStatus(context.Background(), c, map[string]any{"childId": "c1", "includeResponse": true})
+	if !strings.Contains(got, "Latest completed response (newer prompt queued or running):") {
+		t.Fatalf("stale-response label missing:\n%s", got)
+	}
+	if strings.Contains(got, "Final response:") {
+		t.Fatalf("plain label should not appear:\n%s", got)
 	}
 }
 

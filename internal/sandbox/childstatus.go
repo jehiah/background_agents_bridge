@@ -134,7 +134,7 @@ func formatChildDetail(d controlplane.ChildDetail, childID string, includeRespon
 	}
 
 	lines = append(lines, formatArtifacts(d.Artifacts)...)
-	lines = append(lines, formatFinalResponse(d.FinalResponse, includeResponse)...)
+	lines = append(lines, formatFinalResponse(d.FinalResponse, includeResponse, d.HasUnfinishedPrompt)...)
 	lines = append(lines, formatTrajectory(d.Trajectory, includeEventData)...)
 	lines = append(lines, formatRecentEvents(d.RecentEvents)...)
 	return strings.Join(lines, "\n")
@@ -155,14 +155,21 @@ func formatArtifacts(artifacts []controlplane.Artifact) []string {
 	return lines
 }
 
-func formatFinalResponse(fr *controlplane.FinalResponse, includeResponse bool) []string {
+// formatFinalResponse renders the child's last completed response. With a newer
+// prompt queued or running it is labelled as such, so the parent does not read
+// a stale answer as the answer to its follow-up.
+func formatFinalResponse(fr *controlplane.FinalResponse, includeResponse, hasUnfinishedPrompt bool) []string {
 	if fr == nil {
 		if includeResponse {
 			return []string{"", "  Final response: not available yet"}
 		}
 		return nil
 	}
-	lines := []string{"", "  Final response:"}
+	label := "  Final response:"
+	if hasUnfinishedPrompt {
+		label = "  Latest completed response (newer prompt queued or running):"
+	}
+	lines := []string{"", label}
 	if fr.Success {
 		lines = append(lines, "    Success: yes")
 	} else {
