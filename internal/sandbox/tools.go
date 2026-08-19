@@ -31,9 +31,9 @@ type toolImpl struct {
 // generated tool definitions (toolDefs in toolgen.go; enforced by a test).
 var toolImpls = map[string]toolImpl{
 	"create-pull-request": {run: runCreatePR},
-	"spawn-task":          {run: runSpawnTask},
-	"get-task-status":     {run: runGetTaskStatus},
-	"cancel-task":         {run: runCancelTask},
+	"spawn-child":         {run: runSpawnChild},
+	"get-child-status":    {run: runGetChildStatus},
+	"cancel-child":        {run: runCancelChild},
 	"slack-notify":        {run: runSlackNotify, clientErr: slackClientErr},
 	"image-upload":        {run: runImageUpload},
 }
@@ -292,9 +292,9 @@ func firstRepoDir() string {
 	return ""
 }
 
-// --- spawn-task --------------------------------------------------------------
+// --- spawn-child -------------------------------------------------------------
 
-func runSpawnTask(ctx context.Context, c *controlplane.Client, args map[string]any) string {
+func runSpawnChild(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	result, err := c.SpawnChild(ctx, controlplane.SpawnChildRequest{
 		Title:  argStr(args, "title"),
 		Prompt: argStr(args, "prompt"),
@@ -304,53 +304,53 @@ func runSpawnTask(ctx context.Context, c *controlplane.Client, args map[string]a
 		if e, ok := apiErr(err); ok {
 			switch e.StatusCode {
 			case http.StatusForbidden:
-				return fmt.Sprintf("Cannot spawn task: %s. This may be a depth limit or repository restriction.", e.Display())
+				return fmt.Sprintf("Cannot spawn child: %s. This may be a depth limit or repository restriction.", e.Display())
 			case http.StatusTooManyRequests:
-				return fmt.Sprintf("Rate limited: %s. Wait a moment before spawning another task.", e.Display())
+				return fmt.Sprintf("Rate limited: %s. Wait a moment before spawning another child.", e.Display())
 			}
-			return fmt.Sprintf("Failed to spawn task: %s (HTTP %d)", e.Display(), e.StatusCode)
+			return fmt.Sprintf("Failed to spawn child: %s (HTTP %d)", e.Display(), e.StatusCode)
 		}
-		return "Failed to spawn task: " + err.Error()
+		return "Failed to spawn child: " + err.Error()
 	}
 
 	return strings.Join([]string{
-		"Task spawned successfully.",
+		"Child spawned successfully.",
 		"",
-		"  Task ID: " + result.SessionID,
+		"  Child ID: " + result.SessionID,
 		"  Status:  PENDING",
 		"",
-		"The task will continue independently. Check status only when you need its result; do not poll repeatedly.",
+		"The child will continue independently. Check status only when you need its result; do not poll repeatedly.",
 	}, "\n")
 }
 
-// --- cancel-task -------------------------------------------------------------
+// --- cancel-child ------------------------------------------------------------
 
-func runCancelTask(ctx context.Context, c *controlplane.Client, args map[string]any) string {
-	taskID := argStr(args, "taskId")
-	// Cascading is the default: a cancelled task whose own children keep running
+func runCancelChild(ctx context.Context, c *controlplane.Client, args map[string]any) string {
+	childID := argStr(args, "childId")
+	// Cascading is the default: a cancelled child whose own children keep running
 	// leaves orphaned sandboxes behind. The tool schema defaults it too, so the
 	// arg is normally present; this covers a direct `bridge tool` invocation.
 	cancelNested := true
 	if v := argBoolPtr(args, "cancelNested"); v != nil {
 		cancelNested = *v
 	}
-	result, err := c.CancelChild(ctx, taskID, cancelNested)
+	result, err := c.CancelChild(ctx, childID, cancelNested)
 	if err != nil {
 		if e, ok := apiErr(err); ok {
 			switch e.StatusCode {
 			case http.StatusNotFound:
-				return fmt.Sprintf("Task %q not found. Use get-task-status to list available tasks.", taskID)
+				return fmt.Sprintf("Child %q not found. Use get-child-status to list available children.", childID)
 			case http.StatusConflict:
 				return "Cannot cancel: " + e.Display()
 			}
-			return fmt.Sprintf("Failed to cancel task: %s (HTTP %d)", e.Display(), e.StatusCode)
+			return fmt.Sprintf("Failed to cancel child: %s (HTTP %d)", e.Display(), e.StatusCode)
 		}
-		return "Failed to cancel task: " + err.Error()
+		return "Failed to cancel child: " + err.Error()
 	}
 	status := orDefault(result.Status, "cancelled")
 	nested := ""
 	if n := len(result.CancelledDescendantIDs); n > 0 {
-		nested = fmt.Sprintf(" Also cancelled %d nested task(s).", n)
+		nested = fmt.Sprintf(" Also cancelled %d nested child session(s).", n)
 	}
-	return fmt.Sprintf("Task %q cancelled successfully.%s Status: %s", taskID, nested, strings.ToUpper(status))
+	return fmt.Sprintf("Child %q cancelled successfully.%s Status: %s", childID, nested, strings.ToUpper(status))
 }

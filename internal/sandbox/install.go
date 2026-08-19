@@ -225,6 +225,42 @@ func installTools(log *slog.Logger, exe string) {
 		}
 		log.Info("install.tool", "tool", name, "path", path)
 	}
+
+	pruneRenamedTools(log, dir)
+}
+
+// pruneRenamedTools deletes tool files this bridge wrote on an earlier boot but
+// no longer generates — the residue of a renamed tool (spawn-task → spawn-child).
+// A stale file still advertises the old name to opencode while `bridge tool` no
+// longer answers to it, so the agent would see a tool that always errors. Only
+// files carrying the generated banner are removed; anything hand-written or from
+// another source is left alone.
+func pruneRenamedTools(log *slog.Logger, dir string) {
+	current := make(map[string]bool, len(toolDefNames()))
+	for _, name := range toolDefNames() {
+		current[fileNameFor(name)] = true
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		log.Warn("install.tool_prune_scan_error", "exc", err, "dir", dir)
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || current[entry.Name()] || !strings.HasSuffix(entry.Name(), ".js") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		content, err := os.ReadFile(path)
+		if err != nil || !strings.HasPrefix(string(content), generatedHeader) {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			log.Warn("install.tool_prune_error", "exc", err, "path", path)
+			continue
+		}
+		log.Info("install.tool_pruned", "path", path)
+	}
 }
 
 // toolsDir resolves ~/.config/opencode/tools, honoring $HOME.

@@ -11,9 +11,9 @@ import (
 	"github.com/jehiah/background_agents_bridge/internal/controlplane"
 )
 
-// runGetTaskStatus is dual-mode: with no taskId it lists children; with a taskId
-// it returns details. Formatting ports tools/get-task-status-format.js.
-func runGetTaskStatus(ctx context.Context, c *controlplane.Client, args map[string]any) string {
+// runGetChildStatus is dual-mode: with no childId it lists children; with a
+// childId it returns details. Formatting ports tools/get-child-status-format.js.
+func runGetChildStatus(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	includeEventData := argBool(args, "includeEventData")
 	opts := controlplane.ChildDetailOptions{
 		IncludeResponse:   argBool(args, "includeResponse"),
@@ -22,8 +22,8 @@ func runGetTaskStatus(ctx context.Context, c *controlplane.Client, args map[stri
 		TrajectoryCursor:  argStr(args, "trajectoryCursor"),
 	}
 
-	if taskID := argStr(args, "taskId"); taskID != "" {
-		return getChildDetail(ctx, c, taskID, opts, includeEventData)
+	if childID := argStr(args, "childId"); childID != "" {
+		return getChildDetail(ctx, c, childID, opts, includeEventData)
 	}
 	return listChildren(ctx, c)
 }
@@ -32,12 +32,12 @@ func listChildren(ctx context.Context, c *controlplane.Client) string {
 	children, err := c.ListChildren(ctx)
 	if err != nil {
 		if e, ok := apiErr(err); ok {
-			return fmt.Sprintf("Failed to list tasks: %s (HTTP %d)", e.Display(), e.StatusCode)
+			return fmt.Sprintf("Failed to list children: %s (HTTP %d)", e.Display(), e.StatusCode)
 		}
-		return "Failed to list tasks: " + err.Error()
+		return "Failed to list children: " + err.Error()
 	}
 	if len(children) == 0 {
-		return "No child tasks found."
+		return "No child sessions found."
 	}
 
 	var pending, running, done, failed int
@@ -62,26 +62,26 @@ func listChildren(ctx context.Context, c *controlplane.Client) string {
 		)
 	}
 
-	header := fmt.Sprintf("%d child task(s): %d running, %d pending, %d done, %d failed",
+	header := fmt.Sprintf("%d child session(s): %d running, %d pending, %d done, %d failed",
 		len(children), running, pending, done, failed)
 	return strings.Join(append([]string{header, ""}, lines...), "\n")
 }
 
-func getChildDetail(ctx context.Context, c *controlplane.Client, taskID string, opts controlplane.ChildDetailOptions, includeEventData bool) string {
-	detail, err := c.GetChild(ctx, taskID, opts)
+func getChildDetail(ctx context.Context, c *controlplane.Client, childID string, opts controlplane.ChildDetailOptions, includeEventData bool) string {
+	detail, err := c.GetChild(ctx, childID, opts)
 	if err != nil {
 		if e, ok := apiErr(err); ok {
 			if e.StatusCode == http.StatusNotFound {
-				return fmt.Sprintf("Task %q not found. Use get-task-status without a taskId to list all tasks.", taskID)
+				return fmt.Sprintf("Child %q not found. Use get-child-status without a childId to list all children.", childID)
 			}
-			return fmt.Sprintf("Failed to get task: %s (HTTP %d)", e.Display(), e.StatusCode)
+			return fmt.Sprintf("Failed to get child: %s (HTTP %d)", e.Display(), e.StatusCode)
 		}
-		return "Failed to get task: " + err.Error()
+		return "Failed to get child: " + err.Error()
 	}
-	return formatChildDetail(detail, taskID, opts.IncludeResponse, includeEventData)
+	return formatChildDetail(detail, childID, opts.IncludeResponse, includeEventData)
 }
 
-// --- formatting (ported from get-task-status-format.js) ----------------------
+// --- formatting (ported from get-child-status-format.js) ---------------------
 
 var statusLabels = map[string]string{
 	"created":   "PENDING",
@@ -116,11 +116,11 @@ func indentBlock(text, indent string) string {
 	return strings.Join(lines, "\n")
 }
 
-func formatChildDetail(d controlplane.ChildDetail, taskID string, includeResponse, includeEventData bool) string {
+func formatChildDetail(d controlplane.ChildDetail, childID string, includeResponse, includeEventData bool) string {
 	s := d.Session
-	id := orDefault(s.ID, taskID)
+	id := orDefault(s.ID, childID)
 	lines := []string{
-		"Task: " + id,
+		"Child: " + id,
 		"  Title:   " + orDefault(s.Title, "(untitled)"),
 		"  Status:  " + formatStatus(orDefault(s.Status, "unknown")),
 		"  Model:   " + orDefault(s.Model, "default"),

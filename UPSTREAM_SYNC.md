@@ -76,12 +76,13 @@ between still need review):
 | `5dd4a62c` cover sandbox signer preflight failures (#1079) | **Ported**, test-only. Both cases already existed in `gitsign_test.go` but were weaker than upstream's: they are now tightened to assert the signer refuses *before* the POST (an `httptest` server that counts requests) and leaves no `.sig` behind, and the session-config case gains upstream's malformed-`SESSION_CONFIG` table (not-json, array, blank/absent `sessionId`) alongside the no-credentials case. Here the JSON parse lives in `config.Resolve`, not the signer. |
 | `ec02a9a6` per-service HMAC request signing (subject is literally `ColeMurray`; no PR number) | Excluded — dead code in the sandbox. Adds `auth/service_auth.py` plus tests and a vector generator: a Python mirror of `shared/src/service-auth.ts` implementing the `sig1.<timestampMs>.<nonce>.<signature>` scheme that replaces the shared `INTERNAL_CALLBACK_SECRET` bearer. Nothing in sandbox-runtime calls it (it is not even re-exported from `auth/__init__.py`) — it is staged for the control-plane-facing services. The sandbox still authenticates with `SANDBOX_AUTH_TOKEN` as a bearer, unchanged. Port it if a later commit makes the sandbox sign its requests. |
 | `2bbd7772` add Claude Opus 5 support (#1105) | **Ported**, with a divergence. Upstream adds `claude-opus-5` to the exact-id `ANTHROPIC_ADAPTIVE_THINKING_MODELS` allowlist; this port instead matches the `claude-opus-` / `claude-sonnet-` / `claude-fable-` family prefixes (`usesAdaptiveThinking` in `internal/bridge/parts.go`), so a new release gets adaptive thinking without a code change, and names the pre-adaptive members (Opus 4/4.1/4.5, Sonnet 4/4.5) as the exceptions. A trailing `-YYYYMMDD` snapshot is ignored. This also closes a pre-existing gap: `claude-fable-5` (upstream `21c29172`, before the sync point) was never in the port's list. Explicit `provider/model` overrides are unaffected. |
+| `c9a91364` require explicit child session requests (#1199) + `982102b0` rename child session tools to child terminology (#1200) | **Ported together** (one line of #1199 is rewritten again by #1200). Gating: `spawn-child` is invoked only when the user's request explicitly asks for a "child session", never inferred or suggested — the old substantial/parallelizable heuristic is gone. Rename: `spawn-task`/`get-task-status`/`cancel-task` → `spawn-child`/`get-child-status`/`cancel-child`, arg `taskId` → `childId`, and every agent-facing string moves to child wording (`Child spawned successfully.`, `Child ID:`, `No child sessions found.`, `N child session(s):`, `Child: <id>`, `Also cancelled N nested child session(s).`). Old names are removed, not aliased, as upstream. `internal/sandbox/taskstatus.go` is now `childstatus.go`; endpoints and wire fields are unchanged. Upstream relies on an image rebuild to clear the old tool files; this port has no such boundary, so `installTools` now prunes generated tool files it no longer writes (`pruneRenamedTools`) — see the divergence note. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `2bbd7772`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `982102b0`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
@@ -99,6 +100,15 @@ After reconciling a batch of commits, bump the **In sync through** hash above to
 the newest reviewed commit and note any deliberate divergences below.
 
 ## Divergence notes
+
+- **Renamed tool files are pruned on install.** Upstream removes a renamed
+  tool's old `.js` by rebuilding the sandbox image (the `#1200` rename came with
+  a `CACHE_BUSTER` bump); this port writes tool files at boot into
+  `~/.config/opencode/tools/` and has no such boundary, so a resumed sandbox
+  would keep advertising `spawn-task` while `bridge tool` only answers to
+  `spawn-child`. `installTools` therefore deletes any `.js` in that directory
+  that carries the generated banner and is not in the current set. Files without
+  the banner are never touched.
 
 - **Adaptive thinking matches model families, not an exact id list.** Upstream
   keeps `ANTHROPIC_ADAPTIVE_THINKING_MODELS` as a frozenset of exact ids and

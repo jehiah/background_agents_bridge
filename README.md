@@ -58,12 +58,13 @@ runs in one of several modes, selected by the first argument:
     `oi-git-sign`, which execs `bridge git-sign`
   - writes an OpenCode tool definition for each tool into
     `~/.config/opencode/tools/` — a thin `.js` shim that shells back into
-    `bridge tool <name>`.
+    `bridge tool <name>` — and deletes any generated tool file it no longer
+    writes, so a tool renamed between boots does not linger under its old name.
 
 ### Tools
 
 `bridge tool <name>` and the generated shims cover: `create-pull-request`,
-`spawn-task`, `get-task-status`, `cancel-task`, `slack-notify`, and
+`spawn-child`, `get-child-status`, `cancel-child`, `slack-notify`, and
 `image-upload`. The Go binary is the single source of truth for both the tool
 definitions (name, description, args schema) and their execution.
 

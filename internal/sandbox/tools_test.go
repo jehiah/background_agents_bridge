@@ -98,30 +98,30 @@ func TestRunCreatePRRejectsNonFeatureBranch(t *testing.T) {
 	}
 }
 
-func TestRunSpawnTask(t *testing.T) {
+func TestRunSpawnChild(t *testing.T) {
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"sessionId":"child-9","status":"created"}`))
 	})
-	got := runSpawnTask(context.Background(), c, map[string]any{"title": "t", "prompt": "p"})
-	if !strings.Contains(got, "child-9") || !strings.Contains(got, "Task spawned successfully") {
+	got := runSpawnChild(context.Background(), c, map[string]any{"title": "t", "prompt": "p"})
+	if !strings.Contains(got, "child-9") || !strings.Contains(got, "Child spawned successfully") {
 		t.Fatalf("got %q", got)
 	}
 }
 
-func TestRunSpawnTaskForbidden(t *testing.T) {
+func TestRunSpawnChildForbidden(t *testing.T) {
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":"depth limit"}`))
 	})
-	got := runSpawnTask(context.Background(), c, map[string]any{"title": "t", "prompt": "p"})
-	if !strings.Contains(got, "Cannot spawn task: depth limit") {
+	got := runSpawnChild(context.Background(), c, map[string]any{"title": "t", "prompt": "p"})
+	if !strings.Contains(got, "Cannot spawn child: depth limit") {
 		t.Fatalf("got %q", got)
 	}
 }
 
-// TestRunCancelTaskCascades verifies nested cancellation is the default and the
+// TestRunCancelChildCascades verifies nested cancellation is the default and the
 // cancelled descendants are reported back to the agent.
-func TestRunCancelTaskCascades(t *testing.T) {
+func TestRunCancelChildCascades(t *testing.T) {
 	cases := []struct {
 		name     string
 		args     map[string]any
@@ -130,16 +130,16 @@ func TestRunCancelTaskCascades(t *testing.T) {
 	}{
 		{
 			"default_cascades",
-			map[string]any{"taskId": "c1"},
+			map[string]any{"childId": "c1"},
 			`{"cancelNested":true}`,
-			`Task "c1" cancelled successfully. Also cancelled 2 nested task(s). Status: CANCELLED`,
+			`Child "c1" cancelled successfully. Also cancelled 2 nested child session(s). Status: CANCELLED`,
 		},
-		// The agent can still cancel one task without touching its children.
+		// The agent can still cancel one child without touching its own children.
 		{
 			"opt_out",
-			map[string]any{"taskId": "c1", "cancelNested": false},
+			map[string]any{"childId": "c1", "cancelNested": false},
 			`{"cancelNested":false}`,
-			`Task "c1" cancelled successfully. Status: CANCELLED`,
+			`Child "c1" cancelled successfully. Status: CANCELLED`,
 		},
 	}
 	for _, tc := range cases {
@@ -154,7 +154,7 @@ func TestRunCancelTaskCascades(t *testing.T) {
 				}
 				_, _ = w.Write([]byte(`{"status":"cancelled","cancelledDescendantIds":["c2","c3"]}`))
 			})
-			if got := runCancelTask(context.Background(), c, tc.args); got != tc.want {
+			if got := runCancelChild(context.Background(), c, tc.args); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 			if gotBody != tc.wantBody {
@@ -164,12 +164,12 @@ func TestRunCancelTaskCascades(t *testing.T) {
 	}
 }
 
-func TestRunCancelTaskNotFound(t *testing.T) {
+func TestRunCancelChildNotFound(t *testing.T) {
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
-	got := runCancelTask(context.Background(), c, map[string]any{"taskId": "x"})
-	if !strings.Contains(got, `Task "x" not found`) {
+	got := runCancelChild(context.Background(), c, map[string]any{"childId": "x"})
+	if !strings.Contains(got, `Child "x" not found`) {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -219,7 +219,7 @@ func TestRunSlackNotifyUnknownReasonFallsBack(t *testing.T) {
 	}
 }
 
-func TestRunGetTaskStatusList(t *testing.T) {
+func TestRunGetChildStatusList(t *testing.T) {
 	c := cpClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/sessions/sess-1/children" {
 			t.Errorf("path = %s", r.URL.Path)
@@ -229,8 +229,8 @@ func TestRunGetTaskStatusList(t *testing.T) {
 			{"id":"c2","title":"second","status":"completed","createdAt":1700000001000}
 		]}`))
 	})
-	got := runGetTaskStatus(context.Background(), c, map[string]any{})
-	if !strings.Contains(got, "2 child task(s): 1 running, 0 pending, 1 done, 0 failed") {
+	got := runGetChildStatus(context.Background(), c, map[string]any{})
+	if !strings.Contains(got, "2 child session(s): 1 running, 0 pending, 1 done, 0 failed") {
 		t.Fatalf("header missing: %q", got)
 	}
 	if !strings.Contains(got, "[RUNNING] c1") || !strings.Contains(got, "[DONE] c2") {
@@ -238,7 +238,7 @@ func TestRunGetTaskStatusList(t *testing.T) {
 	}
 }
 
-func TestRunGetTaskStatusDetail(t *testing.T) {
+func TestRunGetChildStatusDetail(t *testing.T) {
 	c := cpClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{
 			"session":{"id":"c1","title":"task","status":"completed","model":"m","repoOwner":"o","repoName":"r","branchName":"b","createdAt":1700000000000,"updatedAt":1700000005000},
@@ -246,8 +246,8 @@ func TestRunGetTaskStatusDetail(t *testing.T) {
 			"artifacts":[{"type":"pr","url":"https://x/pr/1"}]
 		}`))
 	})
-	got := runGetTaskStatus(context.Background(), c, map[string]any{"taskId": "c1"})
-	for _, want := range []string{"Task: c1", "Status:  DONE", "Repo:    o/r", "Sandbox: stopped", "- PR: https://x/pr/1"} {
+	got := runGetChildStatus(context.Background(), c, map[string]any{"childId": "c1"})
+	for _, want := range []string{"Child: c1", "Status:  DONE", "Repo:    o/r", "Sandbox: stopped", "- PR: https://x/pr/1"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}
