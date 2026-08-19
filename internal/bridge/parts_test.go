@@ -25,6 +25,10 @@ func TestBuildPromptRequestBody(t *testing.T) {
 			`{"messageID":"msg_x","model":{"modelID":"claude-opus-5","options":{"outputConfig":{"effort":"xhigh"},"thinking":{"type":"adaptive"}},"providerID":"anthropic"},"parts":[{"text":"hi","type":"text"}]}`,
 		},
 		{
+			"anthropic_sonnet_5", "anthropic/claude-sonnet-5", "xhigh",
+			`{"messageID":"msg_x","model":{"modelID":"claude-sonnet-5","options":{"outputConfig":{"effort":"xhigh"},"thinking":{"type":"adaptive"}},"providerID":"anthropic"},"parts":[{"text":"hi","type":"text"}]}`,
+		},
+		{
 			"anthropic_budget", "claude-haiku-4-5", "high",
 			`{"messageID":"msg_x","model":{"modelID":"claude-haiku-4-5","options":{"thinking":{"budgetTokens":16000,"type":"enabled"}},"providerID":"anthropic"},"parts":[{"text":"hi","type":"text"}]}`,
 		},
@@ -36,6 +40,10 @@ func TestBuildPromptRequestBody(t *testing.T) {
 		{
 			"xai", "xai/grok-4.5", "high",
 			`{"messageID":"msg_x","model":{"modelID":"grok-4.5","providerID":"xai"},"parts":[{"text":"hi","type":"text"}],"variant":"high"}`,
+		},
+		{
+			"xai_grok_4_6", "xai/grok-4.6", "medium",
+			`{"messageID":"msg_x","model":{"modelID":"grok-4.6","providerID":"xai"},"parts":[{"text":"hi","type":"text"}],"variant":"medium"}`,
 		},
 		{
 			"model_no_effort", "anthropic/claude-opus-4-8", "",

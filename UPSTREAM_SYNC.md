@@ -108,11 +108,13 @@ between still need review):
 
 | `0e6ed9a9` Split sandbox runtime entrypoint (#1345) | Excluded — a pure decomposition of `entrypoint.py`, the boot orchestrator this port does not implement: 2,523 lines become an 83-line CLI plus new `agent_bridge_process`, `boot_warnings`, `browser_desktop`, `code_server`, `opencode_server`, `repository_bootstrap`, `runtime_config`, and `supervisor` modules, with the three collaborators injected into `SandboxSupervisor`. No behaviour change and nothing that touches the bridge or the tools. |
 
+| `062dec26` Add Claude Sonnet 5, Grok 4.6, Kimi K3, GLM 5.3 (#1433) | **Ported** — no production change was needed. Upstream's only in-scope edit adds `claude-sonnet-5` to its exact-id adaptive-thinking allowlist; this port matches by family prefix (`claude-sonnet-`) with a shrinking denylist of pre-adaptive ids, a deliberate divergence documented at `internal/bridge/parts.go:15`, so Sonnet 5 already sends `thinking: adaptive` + `outputConfig.effort` and `usesAdaptiveThinking("claude-sonnet-5")` was already asserted. Grok 4.6 rides the existing `xai` top-level `variant` path unchanged. Added the two end-to-end prompt-body cases upstream added. The rest is the control-plane/web model catalog. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `0e6ed9a9`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `062dec26`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
