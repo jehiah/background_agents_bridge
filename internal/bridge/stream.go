@@ -72,7 +72,7 @@ func isContextOverflow(e any) bool {
 
 // newStreamState seeds the per-prompt correlation state. The prompt's own user
 // message id is pre-authorized so the assistant reply it parents is accepted.
-func newStreamState(messageID, ocMsgID, ocSessionID string) *streamState {
+func newStreamState(messageID, ocMsgID, ocSessionID string, startedAt time.Time) *streamState {
 	return &streamState{
 		messageID:            messageID,
 		opencodeMessageID:    ocMsgID,
@@ -80,7 +80,7 @@ func newStreamState(messageID, ocMsgID, ocSessionID string) *streamState {
 		cumulativeText:       map[string]string{},
 		emittedToolStates:    map[string]bool{},
 		pendingParts:         map[string][]pendingPart{},
-		attribution:          newMessageAttribution(ocMsgID),
+		attribution:          newMessageAttribution(ocMsgID, startedAt),
 		childActivity:        newChildActivityCorrelator(),
 		emittedErrorMessages: map[string]bool{},
 	}
@@ -108,13 +108,16 @@ func (b *AgentBridge) streamOpencodeResponse(
 	}
 	body := buildPromptRequestBody(content, model, ocMsgID, reasoningEffort, fileParts)
 
-	s := newStreamState(messageID, ocMsgID, ocSessionID)
-
-	// The whole prompt is bounded by an absolute deadline covering the SSE
-	// handshake, the prompt POST, and every event wait — not just the gaps
-	// between events. A stream that goes silent (or never opens) has to trip it,
-	// so it cannot be a check made after each event arrives.
+	// startWall is taken before the prompt is posted, so nothing OpenCode creates
+	// for this prompt can predate it. It also bounds the whole prompt with an
+	// absolute deadline covering the SSE handshake, the prompt POST, and every
+	// event wait — not just the gaps between events. A stream that goes silent
+	// (or never opens) has to trip it, so it cannot be a check made after each
+	// event arrives.
 	startWall := time.Now()
+
+	s := newStreamState(messageID, ocMsgID, ocSessionID, startWall)
+
 	promptCtx, promptCancel := context.WithTimeout(ctx, promptMaxDuration)
 	defer promptCancel()
 
@@ -466,7 +469,7 @@ func (s *streamState) handleMessageUpdated(b *AgentBridge, props map[string]any,
 		}
 		if role == "assistant" && ocMsgID != "" {
 			disposition := s.attribution.assistantDisposition(
-				ocMsgID, gstr(info, "parentID"), info["summary"] == true)
+				ocMsgID, gstr(info, "parentID"), info["summary"] == true, messageCreatedTime(info))
 			// A message carrying an error still belongs to this prompt when it
 			// is one of our compaction summaries, even though its text never
 			// reaches the transcript. Emitting here puts the error in order with
@@ -723,11 +726,11 @@ func (b *AgentBridge) fetchFinalMessageState(ctx context.Context, s *streamState
 		// The same attribution rules as the live stream: a compaction summary is
 		// never accepted here (its text is internal context), and the
 		// post-compaction fallback is limited to messages created after this
-		// prompt's user message, since this list is the whole session history and
-		// a prior turn's text would otherwise overwrite this prompt's answer.
+		// prompt started, since this list is the whole session history and a prior
+		// turn's text would otherwise overwrite this prompt's answer.
 		msgID := gstr(info, "id")
 		disposition := s.attribution.assistantDisposition(
-			msgID, gstr(info, "parentID"), info["summary"] == true)
+			msgID, gstr(info, "parentID"), info["summary"] == true, messageCreatedTime(info))
 		if disposition != assistantOutput {
 			continue
 		}

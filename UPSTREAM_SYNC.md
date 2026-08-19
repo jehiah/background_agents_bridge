@@ -110,11 +110,13 @@ between still need review):
 
 | `062dec26` Add Claude Sonnet 5, Grok 4.6, Kimi K3, GLM 5.3 (#1433) | **Ported** — no production change was needed. Upstream's only in-scope edit adds `claude-sonnet-5` to its exact-id adaptive-thinking allowlist; this port matches by family prefix (`claude-sonnet-`) with a shrinking denylist of pre-adaptive ids, a deliberate divergence documented at `internal/bridge/parts.go:15`, so Sonnet 5 already sends `thinking: adaptive` + `outputConfig.effort` and `usesAdaptiveThinking("claude-sonnet-5")` was already asserted. Grok 4.6 rides the existing `xai` top-level `variant` path unchanged. Added the two end-to-end prompt-body cases upstream added. The rest is the control-plane/web model catalog. |
 
+| `2c3c1e69` Order compaction attribution by creation time (#1431) | **Ported** — the post-compaction fallback scoping added in `e89fb209` compared OpenCode message IDs, but those IDs encode a 48-bit truncation of their creation time, so they wrap roughly every 795 days and IDs minted after a rollover sort below every ID from the window before it. Attribution now orders by the message's own `time.created` against the wall-clock instant taken before the prompt was posted; a message with no usable timestamp is rejected rather than guessed at. Dropped `idIsAfter` and the ID-fixture test helpers, and rewrote the boundary tests around timestamps. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `062dec26`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `2c3c1e69`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

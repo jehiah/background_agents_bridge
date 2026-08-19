@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"fmt"
+	"math"
 	"strings"
+	"time"
 )
 
 // Anthropic extended-thinking budgets by reasoning effort. "max" uses 31,999 —
@@ -141,6 +143,29 @@ func gmap(m map[string]any, key string) map[string]any {
 	}
 	mm, _ := m[key].(map[string]any)
 	return mm
+}
+
+// messageCreatedTime reads time.created (epoch ms) off an OpenCode message,
+// returning nil when it is absent or unusable. Non-finite values count as absent
+// rather than being converted, so a malformed payload cannot poison the ordering
+// the compaction fallback depends on.
+func messageCreatedTime(info map[string]any) *time.Time {
+	var ms int64
+	switch created := gmap(info, "time")["created"].(type) {
+	case float64:
+		if math.IsNaN(created) || math.IsInf(created, 0) {
+			return nil
+		}
+		ms = int64(created)
+	case int64:
+		ms = created
+	case int:
+		ms = int64(created)
+	default:
+		return nil
+	}
+	t := time.UnixMilli(ms)
+	return &t
 }
 
 // truthy mirrors Python truthiness for the values OpenCode sends (nil, empty
