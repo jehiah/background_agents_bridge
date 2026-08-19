@@ -43,8 +43,12 @@ type streamState struct {
 	pendingParts           map[string][]pendingPart
 	pendingPartsTotal      int
 	pendingDropLogged      bool
-	trackedChildSessionIDs map[string]bool
 	compactionOccurred     bool
+
+	// childActivity owns which child sessions belong to this prompt, which Task
+	// call spawned each one, and any child output still waiting for that Task
+	// call to be announced.
+	childActivity *childActivityCorrelator
 
 	// correlatedCompactionSummaryIDs are the compaction summaries belonging to
 	// this prompt. Their text is never forwarded, but an error on one is.
@@ -81,7 +85,7 @@ func newStreamState(messageID, ocMsgID, ocSessionID string) *streamState {
 		allowedAssistantMsgIDs: map[string]bool{},
 		userMessageIDs:         map[string]bool{ocMsgID: true},
 		pendingParts:           map[string][]pendingPart{},
-		trackedChildSessionIDs: map[string]bool{},
+		childActivity:          newChildActivityCorrelator(),
 
 		correlatedCompactionSummaryIDs: map[string]bool{},
 		emittedErrorMessages:           map[string]bool{},
@@ -192,6 +196,11 @@ func (b *AgentBridge) streamOpencodeResponse(
 			break
 		}
 	}
+
+	// Child activity that never learned its Task call still belongs in the
+	// transcript, so every exit from the stream emits it uncorrelated rather
+	// than dropping it.
+	s.flushChildActivity(emit)
 
 	switch {
 	case finishErr != nil:
@@ -322,8 +331,7 @@ func (b *AgentBridge) dispatchSSE(ctx context.Context, s *streamState, ev sseEve
 	case "session.created":
 		info := gmap(props, "info")
 		childID := gstr(info, "id")
-		if childID != "" && gstr(info, "parentID") == s.opencodeSessionID {
-			s.trackedChildSessionIDs[childID] = true
+		if childID != "" && gstr(info, "parentID") == s.opencodeSessionID && s.childActivity.track(childID) {
 			b.log.Info("bridge.child_session_detected", "child_session_id", childID, "source", "session.created")
 		}
 		return false, nil
@@ -340,7 +348,7 @@ func (b *AgentBridge) dispatchSSE(ctx context.Context, s *streamState, ev sseEve
 	if eventSessionID == "" {
 		eventSessionID = gstr(gmap(props, "part"), "sessionID")
 	}
-	isChild := s.trackedChildSessionIDs[eventSessionID]
+	isChild := s.childActivity.isTracked(eventSessionID)
 	if eventSessionID != "" && eventSessionID != s.opencodeSessionID && !isChild {
 		return false, nil
 	}
@@ -382,7 +390,7 @@ func (b *AgentBridge) dispatchSSE(ctx context.Context, s *streamState, ev sseEve
 			}
 			return true, nil
 		}
-		if s.trackedChildSessionIDs[esid] {
+		if s.childActivity.isTracked(esid) {
 			// Child sessions recover through the same automatic compaction, so
 			// surfacing this would fail the whole prompt spuriously.
 			if isContextOverflow(props["error"]) {
@@ -395,9 +403,17 @@ func (b *AgentBridge) dispatchSSE(ctx context.Context, s *streamState, ev sseEve
 				msg = "Sub-task error"
 			}
 			b.log.Error("bridge.child_session_error", "error_msg", msg, "child_session_id", esid)
-			e := errorEvent(msg, s.messageID)
-			e["isSubtask"] = true
-			emit(e)
+			// A child can fail before the parent's task part announced it. Hold
+			// the error until the Task call is known so it nests under the right
+			// one; the flush at stream end is the backstop.
+			taskCallID := s.childActivity.activeTask(esid)
+			if taskCallID == "" {
+				if !s.childActivity.queueError(esid, msg) {
+					b.logPendingChildDrop(s)
+				}
+				return false, nil
+			}
+			emit(s.childErrorEvent(esid, msg, taskCallID))
 			// Parent stream continues.
 		}
 	case "session.compacted":
@@ -485,12 +501,26 @@ func (s *streamState) handleMessageUpdated(b *AgentBridge, props map[string]any,
 		return
 	}
 
-	if s.trackedChildSessionIDs[msgSessionID] && role == "assistant" && ocMsgID != "" {
-		s.allowedAssistantMsgIDs[ocMsgID] = true
-		for _, pp := range s.popPending(ocMsgID) {
-			for _, e := range s.handlePart(pp.part, pp.delta, true) {
-				emit(e)
-			}
+	if s.childActivity.isTracked(msgSessionID) && role == "assistant" && ocMsgID != "" {
+		// Forwarding the message before its Task call is known would strand its
+		// events outside the task they belong to, so hold them instead.
+		switch s.childActivity.authorizeOrQueueMessage(msgSessionID, ocMsgID) {
+		case messageAuthorized:
+			s.drainChildMessage(ocMsgID, emit)
+		case messageQueued:
+		case messageDropped:
+			b.logPendingChildDrop(s)
+		}
+	}
+}
+
+// drainChildMessage authorizes a child assistant message and replays whatever
+// parts of it were buffered while it was unauthorized.
+func (s *streamState) drainChildMessage(ocMsgID string, emit func(event)) {
+	s.allowedAssistantMsgIDs[ocMsgID] = true
+	for _, pp := range s.popPending(ocMsgID) {
+		for _, e := range s.handlePart(pp.part, pp.delta, true) {
+			emit(e)
 		}
 	}
 }
@@ -504,22 +534,90 @@ func (s *streamState) handlePartUpdated(b *AgentBridge, props map[string]any, em
 	ocMsgID := gstr(part, "messageID")
 	partSessionID := gstr(part, "sessionID")
 
+	// A correlated child is one this part just bound to a Task call: its held
+	// activity can be released as soon as the part itself is handled.
+	var correlatedChildSID string
 	if gstr(part, "tool") == "task" && partSessionID == s.opencodeSessionID {
 		childSID := gstr(gmap(part, "metadata"), "sessionId")
-		if childSID != "" && !s.trackedChildSessionIDs[childSID] {
-			s.trackedChildSessionIDs[childSID] = true
-			b.log.Info("bridge.child_session_detected", "child_session_id", childSID, "source", "task_metadata")
+		taskCallID := gstr(part, "callID")
+		if childSID != "" {
+			var isNew bool
+			if taskCallID != "" {
+				isNew = s.childActivity.associate(childSID, taskCallID)
+				correlatedChildSID = childSID
+			} else {
+				isNew = s.childActivity.track(childSID)
+			}
+			if isNew {
+				b.log.Info("bridge.child_session_detected", "child_session_id", childSID, "source", "task_metadata")
+			}
 		}
 	}
 
 	if s.allowedAssistantMsgIDs[ocMsgID] {
-		isSubtask := s.trackedChildSessionIDs[partSessionID]
+		isSubtask := s.childActivity.isTracked(partSessionID)
 		for _, e := range s.handlePart(part, delta, isSubtask) {
 			emit(e)
 		}
 	} else if ocMsgID != "" {
 		s.bufferPart(ocMsgID, part, delta)
 	}
+
+	if correlatedChildSID != "" {
+		s.releaseChildActivity(correlatedChildSID, emit)
+	}
+
+	// A finished task stops owning new activity, but keeps the activity already
+	// attributed to it.
+	if gstr(part, "tool") == "task" {
+		if status := gstr(gmap(part, "state"), "status"); status == "completed" || status == "error" {
+			s.childActivity.closeTask(gstr(part, "callID"))
+		}
+	}
+}
+
+// releaseChildActivity emits the activity held for a child session that just
+// gained a Task call.
+func (s *streamState) releaseChildActivity(childSessionID string, emit func(event)) {
+	for _, a := range s.childActivity.release(childSessionID) {
+		s.emitPendingChildActivity(a, emit)
+	}
+}
+
+// flushChildActivity emits everything still held, correlated where possible.
+func (s *streamState) flushChildActivity(emit func(event)) {
+	for _, a := range s.childActivity.flush() {
+		s.emitPendingChildActivity(a, emit)
+	}
+}
+
+func (s *streamState) emitPendingChildActivity(a pendingChildActivity, emit func(event)) {
+	if a.isErr {
+		emit(s.childErrorEvent(a.childSessionID, a.errMsg, s.childActivity.taskForPending(a)))
+		return
+	}
+	s.drainChildMessage(a.messageID, emit)
+}
+
+// childErrorEvent builds the sub-task error event, tagged with the child
+// session and, when known, the Task call it nests under.
+func (s *streamState) childErrorEvent(childSessionID, msg, taskCallID string) event {
+	e := errorEvent(msg, s.messageID)
+	e["isSubtask"] = true
+	e["childSessionId"] = childSessionID
+	if taskCallID != "" {
+		e["taskCallId"] = taskCallID
+	}
+	return e
+}
+
+// logPendingChildDrop warns once that held child activity is being discarded.
+func (b *AgentBridge) logPendingChildDrop(s *streamState) {
+	if !s.childActivity.shouldLogDrop() {
+		return
+	}
+	b.log.Warn("bridge.pending_child_activity_dropped",
+		"message_id", s.messageID, "limit", maxPendingChildActivity)
 }
 
 // handlePart transforms one OpenCode part into zero or more bridge events.
@@ -542,7 +640,14 @@ func (s *streamState) handlePart(part map[string]any, delta any, isSubtask bool)
 	case "tool":
 		if te, ok := s.transformTool(part); ok {
 			state := gmap(part, "state")
-			toolKey := "tool:" + gstr(part, "sessionID") + ":" + gstr(part, "callID") + ":" + gstr(state, "status")
+			callID := gstr(part, "callID")
+			// The child session is part of the dedupe key: a task part re-emitted
+			// once its child is known carries new information.
+			childSessionID := s.childActivity.childForTask(callID)
+			if gstr(part, "tool") == "task" && childSessionID != "" {
+				te["childSessionId"] = childSessionID
+			}
+			toolKey := "tool:" + gstr(part, "sessionID") + ":" + callID + ":" + gstr(state, "status") + ":" + childSessionID
 			if !s.emittedToolStates[toolKey] {
 				s.emittedToolStates[toolKey] = true
 				events = append(events, te)
@@ -555,8 +660,17 @@ func (s *streamState) handlePart(part map[string]any, delta any, isSubtask bool)
 	}
 
 	if isSubtask {
+		childSessionID := gstr(part, "sessionID")
+		taskCallID := s.childActivity.taskForMessage(gstr(part, "messageID"))
 		for _, e := range events {
 			e["isSubtask"] = true
+			if childSessionID == "" {
+				continue
+			}
+			e["childSessionId"] = childSessionID
+			if taskCallID != "" {
+				e["taskCallId"] = taskCallID
+			}
 		}
 	}
 	return events

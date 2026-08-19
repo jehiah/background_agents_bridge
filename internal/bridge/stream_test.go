@@ -204,7 +204,8 @@ func TestStreamCompactionAuthorizes(t *testing.T) {
 }
 
 // TestStreamChildSubtask verifies child-session tool parts are forwarded with
-// isSubtask=true while child text tokens are suppressed.
+// isSubtask=true while child text tokens are suppressed, and that activity seen
+// before the parent's task part is held until that part names its Task call.
 func TestStreamChildSubtask(t *testing.T) {
 	b := testBridge()
 	s := testStreamState()
@@ -213,7 +214,7 @@ func TestStreamChildSubtask(t *testing.T) {
 	feed(t, b, s, "session.created", map[string]any{
 		"info": map[string]any{"id": "ses_child", "parentID": "ses_parent"},
 	}, c.emit)
-	if !s.trackedChildSessionIDs["ses_child"] {
+	if !s.childActivity.isTracked("ses_child") {
 		t.Fatal("child session not tracked")
 	}
 
@@ -225,19 +226,89 @@ func TestStreamChildSubtask(t *testing.T) {
 	feed(t, b, s, "message.part.updated", map[string]any{
 		"part": map[string]any{"type": "text", "id": "ct", "messageID": "msg_c", "sessionID": "ses_child", "text": "secret"},
 	}, c.emit)
-	// Child tool is forwarded with isSubtask=true.
+	// Child tool waits: nothing yet says which Task call owns this child.
 	feed(t, b, s, "message.part.updated", map[string]any{
 		"part": map[string]any{
 			"type": "tool", "tool": "grep", "callID": "cc", "messageID": "msg_c", "sessionID": "ses_child",
 			"state": map[string]any{"status": "completed", "input": map[string]any{"q": "x"}},
 		},
 	}, c.emit)
+	if len(c.events) != 0 {
+		t.Fatalf("expected child activity to be held, got %v", c.types())
+	}
+
+	// The parent's task part names the child, releasing the held activity.
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "tool", "tool": "task", "callID": "tc1", "messageID": "msg_p", "sessionID": "ses_parent",
+			"metadata": map[string]any{"sessionId": "ses_child"},
+			"state":    map[string]any{"status": "running", "input": map[string]any{"prompt": "go"}},
+		},
+	}, c.emit)
 
 	if got := c.types(); !equalStrings(got, []string{"tool_call"}) {
 		t.Fatalf("expected only subtask tool_call, got %v", got)
 	}
-	if c.events[0]["isSubtask"] != true {
-		t.Errorf("expected isSubtask=true, got %+v", c.events[0])
+	e := c.events[0]
+	if e["isSubtask"] != true || e["childSessionId"] != "ses_child" || e["taskCallId"] != "tc1" {
+		t.Errorf("subtask tool_call not correlated: %+v", e)
+	}
+}
+
+// TestStreamTaskToolCarriesChildSession verifies the parent's own task tool_call
+// is tagged with the child session it spawned.
+func TestStreamTaskToolCarriesChildSession(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+	s.allowedAssistantMsgIDs["msg_p"] = true
+
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "tool", "tool": "task", "callID": "tc1", "messageID": "msg_p", "sessionID": "ses_parent",
+			"metadata": map[string]any{"sessionId": "ses_child"},
+			"state":    map[string]any{"status": "running", "input": map[string]any{"prompt": "go"}},
+		},
+	}, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"tool_call"}) {
+		t.Fatalf("expected task tool_call, got %v", got)
+	}
+	if c.events[0]["childSessionId"] != "ses_child" || c.events[0]["isSubtask"] != nil {
+		t.Errorf("parent task tool_call wrong: %+v", c.events[0])
+	}
+}
+
+// TestStreamChildErrorHeldUntilTask verifies a child error that arrives before
+// the task part is nested under it once known, and that an uncorrelated one is
+// still emitted when the stream ends.
+func TestStreamChildErrorHeldUntilTask(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "session.created", map[string]any{
+		"info": map[string]any{"id": "ses_child", "parentID": "ses_parent"},
+	}, c.emit)
+	feed(t, b, s, "session.error", map[string]any{
+		"sessionID": "ses_child",
+		"error":     map[string]any{"data": map[string]any{"message": "boom"}},
+	}, c.emit)
+	if len(c.events) != 0 {
+		t.Fatalf("expected child error to be held, got %v", c.types())
+	}
+
+	// No task part ever arrives: the end-of-stream flush emits it uncorrelated.
+	s.flushChildActivity(c.emit)
+	if got := c.types(); !equalStrings(got, []string{"error"}) {
+		t.Fatalf("expected flushed error, got %v", got)
+	}
+	e := c.events[0]
+	if e["error"] != "boom" || e["isSubtask"] != true || e["childSessionId"] != "ses_child" {
+		t.Errorf("flushed child error wrong: %+v", e)
+	}
+	if _, ok := e["taskCallId"]; ok {
+		t.Errorf("uncorrelated error should carry no taskCallId: %+v", e)
 	}
 }
 

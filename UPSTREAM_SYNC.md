@@ -85,12 +85,13 @@ between still need review):
 | `693defa9` Grok 4.5 model support (#1238) | Excluded — the only in-scope production change empties the `variants` map on the synthetic `grok-build-0.1` entry in `xai-auth-plugin.js` (Grok Build reasons internally but rejects an effort), and this port ships no plugins. `xai/grok-4.5` itself is a shared-catalog entry resolved from OpenCode's own xAI catalog, and the guard against sending a stale effort to a variant-less model lives in the control plane. The `variant` behavior upstream re-tests here is already ported (#1236); its golden case was retargeted from `grok-build-0.1` to `grok-4.5` to match. |
 | `41a37e4e` Luna max reasoning support (#1239) | Excluded — nothing under `src/sandbox_runtime` changed. The one in-scope line bumps an `@opencode-ai/plugin` fixture string (1.17.18 → 1.18.11) in a test for the un-ported deps-staging step, riding along with a repo-wide OpenCode version bump. The feature is a shared-catalog entry (`openai/gpt-5.6-luna` gains the `max` effort); no runtime change is needed there or here, since the openai branch of `buildPromptRequestBody` forwards any effort verbatim. |
 | `97580a25` Modal image-build lifecycle fixes (#1249) | Excluded — entirely `entrypoint.py` and a new `modal_image_build_start.py`, both belonging to the un-ported boot orchestrator (same reason as `ec02a9a6`/`8cd3a46c`). Modal image builds now run in the sandbox's main process and take their callback token off stdin (`--await-modal-image-build-token-stdin-v1`) rather than from the environment, signal handling moves to a shutdown event that cancels the build cleanly, and hook `output_tail` is redacted in build mode. This port has no image-build mode and no supervisor. |
+| `142fff4e` Nest child activity under Task calls (#1252) | **Ported** — the runtime half. A new `childActivityCorrelator` (`internal/bridge/childactivity.go`) owns the Task-call ↔ child-session binding, so `tool_call` and `error` events from a sub-task carry `childSessionId` and `taskCallId`, and the parent's own `task` tool_call carries `childSessionId`. Child activity seen before the parent's task part is now held (bounded at 2000) instead of forwarded uncorrelated, and released when that part names its Task call; anything still held is flushed at every stream exit. The tool dedupe key gained the child session so a task part re-emitted once its child is known is not suppressed. The control-plane and web nesting UI is out of scope. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `97580a25`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `142fff4e`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
