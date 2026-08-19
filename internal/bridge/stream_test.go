@@ -241,8 +241,10 @@ func TestStreamChildSubtask(t *testing.T) {
 	feed(t, b, s, "message.part.updated", map[string]any{
 		"part": map[string]any{
 			"type": "tool", "tool": "task", "callID": "tc1", "messageID": "msg_p", "sessionID": "ses_parent",
-			"metadata": map[string]any{"sessionId": "ses_child"},
-			"state":    map[string]any{"status": "running", "input": map[string]any{"prompt": "go"}},
+			"state": map[string]any{
+				"status": "completed", "input": map[string]any{"prompt": "go"},
+				"metadata": map[string]any{"sessionId": "ses_child"},
+			},
 		},
 	}, c.emit)
 
@@ -266,8 +268,10 @@ func TestStreamTaskToolCarriesChildSession(t *testing.T) {
 	feed(t, b, s, "message.part.updated", map[string]any{
 		"part": map[string]any{
 			"type": "tool", "tool": "task", "callID": "tc1", "messageID": "msg_p", "sessionID": "ses_parent",
-			"metadata": map[string]any{"sessionId": "ses_child"},
-			"state":    map[string]any{"status": "running", "input": map[string]any{"prompt": "go"}},
+			"state": map[string]any{
+				"status": "completed", "input": map[string]any{"prompt": "go"},
+				"metadata": map[string]any{"sessionId": "ses_child"},
+			},
 		},
 	}, c.emit)
 
@@ -323,8 +327,10 @@ func TestStreamChildErrorAfterTaskCompletes(t *testing.T) {
 	feed(t, b, s, "message.part.updated", map[string]any{
 		"part": map[string]any{
 			"type": "tool", "tool": "task", "callID": "tc1", "messageID": "msg_p", "sessionID": "ses_parent",
-			"metadata": map[string]any{"sessionId": "ses_child"},
-			"state":    map[string]any{"status": "completed", "input": map[string]any{"prompt": "go"}},
+			"state": map[string]any{
+				"status": "completed", "input": map[string]any{"prompt": "go"},
+				"metadata": map[string]any{"sessionId": "ses_child"},
+			},
 		},
 	}, c.emit)
 	feed(t, b, s, "session.error", map[string]any{

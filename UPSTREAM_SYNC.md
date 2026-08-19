@@ -88,12 +88,13 @@ between still need review):
 | `142fff4e` Nest child activity under Task calls (#1252) | **Ported** — the runtime half. A new `childActivityCorrelator` (`internal/bridge/childactivity.go`) owns the Task-call ↔ child-session binding, so `tool_call` and `error` events from a sub-task carry `childSessionId` and `taskCallId`, and the parent's own `task` tool_call carries `childSessionId`. Child activity seen before the parent's task part is now held (bounded at 2000) instead of forwarded uncorrelated, and released when that part names its Task call; anything still held is flushed at every stream exit. The tool dedupe key gained the child session so a task part re-emitted once its child is known is not suppressed. The control-plane and web nesting UI is out of scope. |
 | `b1d98cd6` Distinguish subtasks from child sessions (#1258) | **Ported** — the `spawn-child` tool description now names 'sub-agent'/'subagent'/'sub-task'/'subtask' as *not* requests for a child session (they mean in-process task delegation), and says "suggest using a child session" instead of the ambiguous "using one". Text only; a `toolgen` test pins the wording. |
 | `ca95ed36` Fix folding for delayed child task events (#1259) | **Ported.** A child session's closed Task call is now remembered by id, so activity that trails a completed task nests under it instead of being flushed uncorrelated, and an already-bound message stays bound when the child session is resumed under a new task. Most of this arrived early: `childActivityCorrelator` was written against upstream's post-`ca95ed36` file, so the `142fff4e` row above covers the correlator half. What landed here is the consumer change — the child `session.error` branch calls `taskForActivity` rather than `activeTask` — plus the correlator and stream tests for a late error and a resumed task. |
+| `d66615c0` Fix Task folding metadata extraction (#1260) | **Ported** — the child session id is read from the task part's tool *state* (`state.metadata.sessionId`), not the part itself, which is where OpenCode actually puts it. Without this the `task_metadata` discovery path never fired and no child was ever bound to a Task call. Upstream's tests also pin the sequencing this exposes: a foreground task publishes the metadata only on its *completed* state, after the child's own activity has streamed, so correlation always runs through the hold-then-release path from `142fff4e`. The port's tests were updated to the real shape. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `ca95ed36`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `d66615c0`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes

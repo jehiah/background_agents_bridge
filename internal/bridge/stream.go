@@ -539,7 +539,10 @@ func (s *streamState) handlePartUpdated(b *AgentBridge, props map[string]any, em
 	// activity can be released as soon as the part itself is handled.
 	var correlatedChildSID string
 	if gstr(part, "tool") == "task" && partSessionID == s.opencodeSessionID {
-		childSID := gstr(gmap(part, "metadata"), "sessionId")
+		// The child session id rides on the tool state, not the part: a
+		// foreground task publishes it only once the call completes, which is
+		// after the child's own activity has streamed.
+		childSID := gstr(gmap(gmap(part, "state"), "metadata"), "sessionId")
 		taskCallID := gstr(part, "callID")
 		if childSID != "" {
 			var isNew bool
