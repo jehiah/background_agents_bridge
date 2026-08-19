@@ -31,15 +31,18 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 		)
 	}()
 
-	// Attribute commits to the prompt author, falling back to the agent.
+	// Attribute commits to the prompt author, falling back to the agent, and
+	// refresh the delegated signing configuration while we are at it.
 	author, err := promptGitAuthor(cmd.Author)
+	if err == nil {
+		err = b.configureGitIdentity(ctx, author)
+	}
 	if err != nil {
 		outcome = "error"
 		b.log.Error("prompt.error", "exc", err, "message_id", messageID)
 		b.sendEvent(executionCompleteEvent(messageID, false, err.Error()))
 		return nil
 	}
-	b.configureGitIdentity(ctx, author)
 
 	if b.getOpencodeSessionID() == "" {
 		if err := b.createOpencodeSession(ctx); err != nil {

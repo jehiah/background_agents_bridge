@@ -46,41 +46,25 @@ func (b *AgentBridge) findRepoDir() (string, bool) {
 	return "", false
 }
 
-// configureGitIdentity sets git user.name/user.email for commit attribution. A
-// nil user is agent-only attribution, which commits under fallbackGitUser.
-// Failures are logged but not fatal.
+// configureGitIdentity installs the commit attribution and signing settings for
+// one prompt. A nil user is agent-only attribution (see promptGitAuthor).
 //
-// Upstream writes the identity into every member checkout with
-// `git config --local`; this port writes it once with `--global` (see
-// UPSTREAM_SYNC.md). The identity is session-wide, nothing in the sandbox
-// writes a local identity that could shadow it, and the global value also
-// covers repositories the agent clones or creates outside the manifest.
-func (b *AgentBridge) configureGitIdentity(ctx context.Context, user *GitUser) {
-	effective := fallbackGitUser
-	if user != nil {
-		effective = *user
+// Upstream writes these into every member checkout with `git config --local`;
+// this port writes them once with `--global` (see UPSTREAM_SYNC.md). The
+// settings are session-wide, nothing in the sandbox writes a local identity
+// that could shadow them, and the global values also cover repositories the
+// agent clones or creates outside the manifest.
+//
+// Failures are returned, not swallowed: a commit made with the wrong author, or
+// unsigned under a signing deployment, is worse than a refused prompt.
+func (b *AgentBridge) configureGitIdentity(ctx context.Context, user *GitUser) error {
+	config, err := b.fetchSigningConfig(ctx)
+	if err != nil {
+		return err
 	}
-	b.log.Debug("git.identity_configure", "git_name", effective.Name, "git_email", effective.Email)
-
-	run := func(key, value string) error {
-		cctx, cancel := context.WithTimeout(ctx, gitConfigTimeout)
-		defer cancel()
-		c := exec.CommandContext(cctx, "git", "config", "--global", key, value)
-		var stderr bytes.Buffer
-		c.Stderr = &stderr
-		if err := c.Run(); err != nil {
-			return fmt.Errorf("git config --global %s: %w: %s", key, err, strings.TrimSpace(stderr.String()))
-		}
-		return nil
-	}
-
-	if err := run("user.name", effective.Name); err != nil {
-		b.log.Error("git.identity_error", "exc", err)
-		return
-	}
-	if err := run("user.email", effective.Email); err != nil {
-		b.log.Error("git.identity_error", "exc", err)
-	}
+	b.log.Debug("git.identity_configure",
+		"signing_enabled", config.Enabled, "attributed", user != nil)
+	return b.applySigningConfig(ctx, config, user)
 }
 
 // promptGitAuthor resolves the commit author a prompt asks for. The control

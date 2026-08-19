@@ -14,9 +14,14 @@
 //	                                    chain into connect-opencode so a single
 //	                                    command supervises both
 //	bridge git-credential <get|...>     git credential helper (brokers SCM tokens)
+//	bridge git-sign [ssh-keygen args]   ssh-keygen stand-in for commit signing:
+//	                                    brokers the signature through the control
+//	                                    plane and passes everything else through
+//	                                    to the real ssh-keygen
 //	bridge tool <name>                  execute one OpenCode tool (args JSON on
 //	                                    stdin, result on stdout)
-//	bridge install                      self-install the credential helper + tools
+//	bridge install                      self-install the credential helper, the
+//	                                    gh and commit-signing shims, and the tools
 //
 // A subcommand is always required.
 //
@@ -46,7 +51,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const usageLine = "usage: bridge <connect-opencode|run-opencode|git-credential|tool|install> [flags] ..."
+const usageLine = "usage: bridge <connect-opencode|run-opencode|git-credential|git-sign|tool|install> [flags] ..."
 
 func main() {
 	// Dispatch on the first argument, which must name a subcommand.
@@ -61,6 +66,8 @@ func main() {
 	switch cmd {
 	case "git-credential":
 		runGitCredential(args)
+	case "git-sign":
+		runGitSign(args)
 	case "tool":
 		runTool(args)
 	case "install":
@@ -188,6 +195,15 @@ func runTool(argv []string) {
 	}
 	if err := sandbox.RunTool(argv[0], os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "tool: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runGitSign brokers one commit signature through the control plane. git reads
+// stderr, so failures are reported as a bounded one-line message.
+func runGitSign(argv []string) {
+	if err := sandbox.GitSign(argv); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", sandbox.GitSignerCommand, err)
 		os.Exit(1)
 	}
 }

@@ -86,6 +86,12 @@ type AgentBridge struct {
 
 	gitSyncOnce  sync.Once
 	gitSyncDoneC chan struct{}
+
+	// signingMu serializes the global git config writes that carry commit
+	// attribution and signing, and guards the revision installed by the last
+	// one (so unchanged signing settings are not rewritten every prompt).
+	signingMu                sync.Mutex
+	installedSigningRevision string
 }
 
 // New constructs an AgentBridge. log should already carry base attributes
@@ -144,6 +150,14 @@ func (b *AgentBridge) Run(parent context.Context) error {
 	b.log.Info("bridge.run_start")
 	b.loadSessionID(ctx)
 	b.diffRefresh.Start(ctx)
+
+	// Install commit attribution and signing before the first prompt, so a
+	// commit made outside a prompt is still attributed and signed. A failure
+	// here is only a warning: the first prompt refreshes the configuration and
+	// reports the failure to the control plane if it persists.
+	if err := b.configureGitIdentity(ctx, nil); err != nil {
+		b.log.Warn("git.signing_init_failed", "exc", err)
+	}
 
 	// The terminal summary: how the run ended plus the lifetime aggregates.
 	// runOutcome is reset per iteration so a failure that a later reconnect

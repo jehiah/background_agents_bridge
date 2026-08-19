@@ -3,6 +3,7 @@ package bridge
 import (
 	"io"
 	"log/slog"
+	"net/http"
 
 	"github.com/jehiah/background_agents_bridge/internal/sessiondiff"
 )
@@ -16,6 +17,7 @@ func testBridge() *AgentBridge {
 		ids:         &identifier{},
 		pendingAcks: map[string]event{},
 		sandboxID:   "sb-test",
+		httpClient:  http.DefaultClient,
 		// Never started, so requests are recorded and nothing is collected; a
 		// test that wants uploads replaces it (see withDiffWorker).
 		diffRefresh: sessiondiff.NewWorker(nil, "", log),

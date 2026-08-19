@@ -32,17 +32,25 @@ runs in one of several modes, selected by the first argument:
 | `bridge run-opencode` | Launch `opencode serve` as a child process **and** chain into `connect-opencode` in the same process, so a single command supervises both. |
 | `bridge git-credential <get\|store\|erase>` | A [git credential helper](https://git-scm.com/docs/gitcredentials#_custom_helpers): brokers a fresh SCM token from the control plane on each git op (no caching). |
 | `bridge tool <name>` | Execute one OpenCode tool — reads JSON args on stdin, proxies to the control plane, writes the agent-facing result on stdout. |
-| `bridge install` | Run the self-install steps only (credential helper + tool files). |
+| `bridge git-sign <ssh-keygen args>` | The delegated commit signer git invokes as `gpg.ssh.program`: POSTs the unsigned commit buffer to the control plane and writes back the SSH signature. Any invocation that isn't `-Y sign -n git` execs the stock `ssh-keygen`. |
+| `bridge install` | Run the self-install steps only (credential helper + tool files + wrapper scripts). |
 
 ### `connect-opencode`
 
 - **WebSocket connection** to the control plane Durable Object, including
   reconnection, **heartbeat**, **event forwarding** (tool calls, token streams,
   status updates), and **command handling** (prompt, stop, snapshot).
-- **Git identity configuration** per prompt author.
+- **Git identity configuration** per prompt author. The control plane says whether
+  the prompt is attributed to a user or agent-only, and whether commits are
+  signed; the bridge writes the matching `author.*`/`committer.*`/`gpg.*` global
+  git config before each prompt runs. The signing key itself never enters the
+  sandbox — only the public key, plus git pointed at the `oi-git-sign` shim.
 - **Self-install** on startup:
   - registers `bridge git-credential` as git's `credential.helper`
     (`git config --system credential.helper "bridge git-credential"`)
+  - drops two shell shims into the first directory on `$PATH`: a `gh` wrapper
+    that provisions `GITHUB_TOKEN` before exec'ing the real `gh`, and
+    `oi-git-sign`, which execs `bridge git-sign`
   - writes an OpenCode tool definition for each tool into
     `~/.config/opencode/tools/` — a thin `.js` shim that shells back into
     `bridge tool <name>`.
@@ -146,7 +154,7 @@ gcloud compute instances create bridge-vm \
 
 ## Layout
 
-- `cmd/bridge` — subcommand dispatch (`connect-opencode` | `run-opencode` | `git-credential` | `tool` | `install`).
+- `cmd/bridge` — subcommand dispatch (`connect-opencode` | `run-opencode` | `git-credential` | `tool` | `git-sign` | `install`).
 - `internal/config` — flag→env→GCE-metadata resolution shared by every mode.
 - `internal/gcpmeta` — minimal GCE metadata client.
 - `internal/controlplane` — the typed control-plane client: one method per
@@ -164,9 +172,9 @@ gcloud compute instances create bridge-vm \
   UploadMedia(ctx, UploadMediaRequest) (MediaResult, error)
   ```
 
-- `internal/sandbox` — sandbox-side glue: the credential helper, the
-  `bridge tool` dispatch and agent-facing formatting, and the self-install of the
-  credential helper and OpenCode tool files.
+- `internal/sandbox` — sandbox-side glue: the credential helper, the delegated
+  commit signer, the `bridge tool` dispatch and agent-facing formatting, and the
+  self-install of the credential helper, shims, and OpenCode tool files.
 - `internal/bridge` — the `connect-opencode`-mode WebSocket bridge (reconnect loop,
   heartbeat, event forwarding, command handling, git identity + push).
 - `internal/sessiondiff` — the durable session diff viewer: the git-backed

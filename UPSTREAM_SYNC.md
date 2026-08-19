@@ -67,7 +67,7 @@ between still need review):
 | `01a77eda` extract `BufferedEventForwarder` from the bridge (#1058) | Excluded — a behavior-preserving Python refactor (send/buffer/flush/ack machinery moves from `bridge.py` into `event_forwarder.py`; log names, ack-id scheme, eviction policy and the 1000-event cap all unchanged). The Go port already has that seam in `internal/bridge/send.go`, covered by `send_test.go`. It stays a file rather than a type because the buffer shares `b.mu` with the connection — coder/websocket permits a single writer, so giving the forwarder its own lock would be a regression. |
 | `d7955427` extract `OpenCodePromptStream` from the bridge (#1060) | Excluded — the same kind of behavior-preserving Python refactor: the 544-line `_stream_opencode_response_sse` and its helpers move into `prompt_stream.py`, the two nested closures become methods over a per-call `_PromptState`, and the thinking-budget / pending-part / default-title constants become module `Final`s. Nothing about the wire, the log names or the timeouts changes. The Go port never had the god-method — the same decomposition already exists as `internal/bridge/stream.go` plus `parts.go`, `attachments.go`, `opencode.go`, `identifier.go` and `prompt.go`, with per-prompt state in a function-local `streamState` and the cross-prompt session-title dedupe on the bridge (`lastForwardedSessionTitle`), matching upstream's instance-level scope. |
 | `2914de18` extract `OpenCodeClient` from the prompt stream (#1062) | Excluded — the transport/translator split promised in the #1060 review, again with no wire or behavior change: `opencode_client.py` takes the base URL, `open_event_stream`, `post_prompt`, `request_stop`, `get_messages` and `parse_sse_stream`, `opencode_identifier.py` takes `OpenCodeIdentifier`, and the stream keeps the state machine, reconciliation, title dedupe, request-body construction and the prompt-lifecycle timeouts. The Go port already draws that boundary: `internal/bridge/opencode.go` (`opencodeGet`, `createOpencodeSession`, `opencodeSessionExists`, `requestOpencodeStop`, `listMessages`) is the transport, `identifier.go` is the standalone ID module, and `stream.go` is the translator, with the inactivity deadline stream-side as upstream now has it. Two seams sit differently by design: `postPrompt` stays in `stream.go`, and SSE framing is `tmaxmax/go-sse` so there is no `parse_sse_stream` to relocate. |
-| `cd377d60` delegated commit signing with user attribution (#1030) | **Partially ported.** The prompt attribution half is in: `commandAuthor.gitIdentity` with `agent-only` / `attributed-user` modes (`promptGitAuthor` in `internal/bridge/git.go`), an unparseable identity failing the prompt with upstream's `Invalid prompt Git identity`, and the identity written with `git config --global` (see the divergence notes for that and for the legacy `scmName`/`scmEmail` fallback). The signing half — `git_signing.py`'s config fetch and per-repository `gpg.*`/`commit.gpgsign` install, and the `oi-git-sign` control-plane signer (`git_signer.py`) — is not ported yet. |
+| `cd377d60` delegated commit signing with user attribution (#1030) | Ported, in two commits. Attribution: `commandAuthor.gitIdentity` with `agent-only` / `attributed-user` modes (`promptGitAuthor` in `internal/bridge/git.go`), an unparseable identity failing the prompt with upstream's `Invalid prompt Git identity`. Signing: `internal/bridge/gitsigning.go` fetches `GET /sessions/{id}/commit-signing` before each prompt, validates the committer identity and the `ssh-ed25519` public key, and installs `author.*` / `committer.* `/ `gpg.format` / `gpg.ssh.program` / `user.signingkey` / `commit.gpgsign` (unsetting all of them again when signing is turned off mid-session); `internal/sandbox/gitsign.go` is `oi-git-sign`, which POSTs the unsigned commit buffer and writes back the SSHSIG armor. The private key never reaches the sandbox, the author stays the requesting user and the committer/signer is the deployment identity, as upstream. See the divergence notes for the global config, the legacy `scmName`/`scmEmail` fallback, the 404 tolerance and the shim. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
@@ -156,12 +156,26 @@ the newest reviewed commit and note any deliberate divergences below.
   else. This port keeps accepting the pre-#1030 shape so it still works against
   a control plane that has not shipped the change; a `gitIdentity` that *is*
   present but unparseable fails the prompt exactly as upstream does.
+- **A 404 from `/sessions/{id}/commit-signing` disables signing** instead of
+  failing the prompt, on the same reasoning and matching how the diff worker
+  already tolerates a control plane without the diff endpoint. Every *other*
+  failure is fail-closed as upstream is: an unreachable endpoint, a non-404
+  status, an unparseable body, a committer name/email or public key that fails
+  validation, or signing enabled while `oi-git-sign` is missing from `$PATH` all
+  fail the prompt rather than producing a commit signed by — or attributed to —
+  an identity the bridge could not confirm.
+- **`gpg.ssh.program` points at an `oi-git-sign` shell shim**, not at the Go
+  binary. Git execs the program directly (no shell, no extra argv), so a
+  `bridge git-sign` subcommand cannot be named there; the shim is a two-line
+  `exec` script written by `sandbox.Install` into the first `$PATH` directory,
+  the same pattern as the existing `gh` wrapper, and it stands in for upstream's
+  `bin/oi-git-sign`. The signer resolves its own endpoint through
+  `config.Resolve` (env → `SESSION_CONFIG` → GCE metadata) rather than upstream's
+  env-only read, because git spawns it several processes below the bridge.
 - **`create-pull-request` description** still names `__BRIDGE_DEFAULT_REPO_DIR__`
   (the primary checkout), whereas upstream dropped the path from the description.
   Kept as a Go-port-specific hint; the `repo` arg overrides it for multi-repo
   sessions.
-- **Git identity** uses `git config --local` per member checkout (matching #899);
-  the previous `--global` single-config behavior is replaced.
 - **Sole-checkout resolution** keeps the Go port's existing `REPO_NAME`
   preference (see `findRepoDir`) rather than upstream's plain sorted-glob, so the
   push and PR tools stay pinned to the same tree OpenCode edits.

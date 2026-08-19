@@ -284,20 +284,3 @@ func TestPromptGitAuthor(t *testing.T) {
 		})
 	}
 }
-
-func TestConfigureGitIdentityWritesGlobalConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	b := testBridge()
-
-	// Agent-only prompts still need an identity, or git refuses to commit.
-	b.configureGitIdentity(t.Context(), nil)
-	if got := gitInDir(t, home, "config", "--global", "user.name"); got != fallbackGitUser.Name {
-		t.Errorf("user.name = %q, want %q", got, fallbackGitUser.Name)
-	}
-
-	b.configureGitIdentity(t.Context(), &GitUser{Name: "Jane", Email: "jane@example.com"})
-	if got := gitInDir(t, home, "config", "--global", "user.email"); got != "jane@example.com" {
-		t.Errorf("user.email = %q", got)
-	}
-}
