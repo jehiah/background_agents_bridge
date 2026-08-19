@@ -75,12 +75,13 @@ between still need review):
 | `f791bc7c` authenticate gh in E2B sandboxes (#1093) | Excluded — not relevant to this port. The fix is for E2B/opencomputer images, where the sandbox runs non-root and so could never write the wrapper to `/usr/local/bin/gh`; the failure was swallowed by a debug-level `gh_wrapper.install_failed`. Upstream extracts the inline `GH_WRAPPER_BODY` string into a `gh-wrapper.sh` package data file so the image builders can bake the same bytes in, adds `GH_WRAPPER_INSTALL_PATH`, checks the real gh for executability rather than existence, rewrites a byte-identical-but-non-executable wrapper, and raises `RuntimeError("Cannot install authenticated gh wrapper at …")` instead of logging. This port already keeps the script as a separate `internal/sandbox/gh_wrapper.sh` embedded with `//go:embed`, and installs it into the first directory on `$PATH` rather than `/usr/local/bin` — precisely so a non-root sandbox can write it — so the bug cannot occur. The only transferable piece is the fail-loud posture; `installGHWrapper` still logs `install.gh_wrapper_error` and continues, which is deliberate here: unlike upstream's supervisor boot, it runs alongside the credential-helper and tool-file installs and a wrapper failure should not abort the bridge. |
 | `5dd4a62c` cover sandbox signer preflight failures (#1079) | **Ported**, test-only. Both cases already existed in `gitsign_test.go` but were weaker than upstream's: they are now tightened to assert the signer refuses *before* the POST (an `httptest` server that counts requests) and leaves no `.sig` behind, and the session-config case gains upstream's malformed-`SESSION_CONFIG` table (not-json, array, blank/absent `sessionId`) alongside the no-credentials case. Here the JSON parse lives in `config.Resolve`, not the signer. |
 | `ec02a9a6` per-service HMAC request signing (subject is literally `ColeMurray`; no PR number) | Excluded — dead code in the sandbox. Adds `auth/service_auth.py` plus tests and a vector generator: a Python mirror of `shared/src/service-auth.ts` implementing the `sig1.<timestampMs>.<nonce>.<signature>` scheme that replaces the shared `INTERNAL_CALLBACK_SECRET` bearer. Nothing in sandbox-runtime calls it (it is not even re-exported from `auth/__init__.py`) — it is staged for the control-plane-facing services. The sandbox still authenticates with `SANDBOX_AUTH_TOKEN` as a bearer, unchanged. Port it if a later commit makes the sandbox sign its requests. |
+| `2bbd7772` add Claude Opus 5 support (#1105) | **Ported**, with a divergence. Upstream adds `claude-opus-5` to the exact-id `ANTHROPIC_ADAPTIVE_THINKING_MODELS` allowlist; this port instead matches the `claude-opus-` / `claude-sonnet-` / `claude-fable-` family prefixes (`usesAdaptiveThinking` in `internal/bridge/parts.go`), so a new release gets adaptive thinking without a code change, and names the pre-adaptive members (Opus 4/4.1/4.5, Sonnet 4/4.5) as the exceptions. A trailing `-YYYYMMDD` snapshot is ignored. This also closes a pre-existing gap: `claude-fable-5` (upstream `21c29172`, before the sync point) was never in the port's list. Explicit `provider/model` overrides are unaffected. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `ec02a9a6`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `2bbd7772`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
@@ -98,6 +99,18 @@ After reconciling a batch of commits, bump the **In sync through** hash above to
 the newest reviewed commit and note any deliberate divergences below.
 
 ## Divergence notes
+
+- **Adaptive thinking matches model families, not an exact id list.** Upstream
+  keeps `ANTHROPIC_ADAPTIVE_THINKING_MODELS` as a frozenset of exact ids and
+  edits it per release; `usesAdaptiveThinking` (`internal/bridge/parts.go`)
+  instead treats every `claude-opus-` / `claude-sonnet-` / `claude-fable-` id as
+  adaptive, listing only the pre-adaptive members (Opus 4/4.1/4.5, Sonnet 4/4.5)
+  as exceptions, and ignoring a trailing `-YYYYMMDD` snapshot. A model released
+  after this code therefore gets adaptive thinking rather than a stale fixed
+  budget, which is the right default for those families; the cost is that a
+  future Claude family member that drops adaptive thinking needs an entry in
+  `anthropicFixedThinkingModels`. Other families (`claude-haiku-*`) and
+  providers are unaffected, as are explicit `provider/model` overrides.
 
 - **Supervisor (`entrypoint.py`) is not ported.** The Go port covers the bridge,
   git-credential helper, control-plane client, install, and native tools — not
