@@ -90,12 +90,13 @@ between still need review):
 | `ca95ed36` Fix folding for delayed child task events (#1259) | **Ported.** A child session's closed Task call is now remembered by id, so activity that trails a completed task nests under it instead of being flushed uncorrelated, and an already-bound message stays bound when the child session is resumed under a new task. Most of this arrived early: `childActivityCorrelator` was written against upstream's post-`ca95ed36` file, so the `142fff4e` row above covers the correlator half. What landed here is the consumer change — the child `session.error` branch calls `taskForActivity` rather than `activeTask` — plus the correlator and stream tests for a late error and a resumed task. |
 | `d66615c0` Fix Task folding metadata extraction (#1260) | **Ported** — the child session id is read from the task part's tool *state* (`state.metadata.sessionId`), not the part itself, which is where OpenCode actually puts it. Without this the `task_metadata` discovery path never fired and no child was ever bound to a Task call. Upstream's tests also pin the sequencing this exposes: a foreground task publishes the metadata only on its *completed* state, after the child's own activity has streamed, so correlation always runs through the hold-then-release path from `142fff4e`. The port's tests were updated to the real shape. |
 | `f1e4318c` Remove dead legacy callback-signing token generator (#1282) | Excluded — deletes `generate_internal_token` from `sandbox_runtime/auth/internal.py` (and its re-export) now that image-build callbacks sign with the newer scheme. The whole `auth/` package is un-ported: this bridge authenticates to the control plane with its own credential, has no `MODAL_API_SECRET`, and serves no inbound endpoints to verify tokens for. The rest of the commit is `packages/modal-infra`. |
+| `fbf38818` Require completion fields at image-build callback boundary (#1284) | Excluded — image-build mode only, in the un-ported boot orchestrator (same reason as `97580a25`). `RepoImageBuildCallback.from_env` now raises `RepoImageCallbackMisconfigured` when only some `OI_REPO_IMAGE_*` variables are set, so a partial build aborts at boot instead of running with completion reporting off and wedging the control-plane row in `building`; `base_sha` also leaves `report_success` and `RepositoryBootResult`, derived control-plane side from `repository_shas`. This port has no image-build mode and no supervisor. |
 
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `f1e4318c`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `fbf38818`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
