@@ -124,11 +124,13 @@ between still need review):
 
 | `03938875` Reconcile Git signing configuration on every refresh (#1492) | **Ported** — dropped the process-local install cache (`signingConfig.revision()` and `AgentBridge.installedSigningRevision`) and the two `signing_state_changed` guards, so every prompt reconciles the full set of owned keys: the disabled path always unsets them, the enabled path always rewrites them. `setGitConfig` now passes `--replace-all`, without which a key that drifted into holding several values makes `git config` fail rather than be repaired. Tests cover enabled and disabled drift repair, the multivalued key, and that unowned config survives. |
 
+| `f61ee535` Reduce Fluxbox log noise (#1499) | Excluded — `browser_desktop.py` forwards the Fluxbox child's output at debug instead of info, leaving the other desktop components and the `vnc.*` lifecycle signals at info. This port runs no browser desktop; the module is part of the un-ported supervisor. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `03938875`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `f61ee535`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
