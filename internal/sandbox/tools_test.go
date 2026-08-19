@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -115,6 +116,51 @@ func TestRunSpawnTaskForbidden(t *testing.T) {
 	got := runSpawnTask(context.Background(), c, map[string]any{"title": "t", "prompt": "p"})
 	if !strings.Contains(got, "Cannot spawn task: depth limit") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// TestRunCancelTaskCascades verifies nested cancellation is the default and the
+// cancelled descendants are reported back to the agent.
+func TestRunCancelTaskCascades(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     map[string]any
+		wantBody string
+		want     string
+	}{
+		{
+			"default_cascades",
+			map[string]any{"taskId": "c1"},
+			`{"cancelNested":true}`,
+			`Task "c1" cancelled successfully. Also cancelled 2 nested task(s). Status: CANCELLED`,
+		},
+		// The agent can still cancel one task without touching its children.
+		{
+			"opt_out",
+			map[string]any{"taskId": "c1", "cancelNested": false},
+			`{"cancelNested":false}`,
+			`Task "c1" cancelled successfully. Status: CANCELLED`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody string
+			c := cpClient(t, func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				gotBody = strings.TrimSpace(string(body))
+				if tc.args["cancelNested"] == false {
+					_, _ = w.Write([]byte(`{"status":"cancelled"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"status":"cancelled","cancelledDescendantIds":["c2","c3"]}`))
+			})
+			if got := runCancelTask(context.Background(), c, tc.args); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+			if gotBody != tc.wantBody {
+				t.Errorf("request body = %q, want %q", gotBody, tc.wantBody)
+			}
+		})
 	}
 }
 

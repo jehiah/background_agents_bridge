@@ -160,15 +160,27 @@ func childQuery(opts ChildDetailOptions) string {
 	return ""
 }
 
-// CancelResult is the outcome of cancelling a child.
+// CancelResult is the outcome of cancelling a child. CancelledDescendantIDs
+// lists the nested tasks the control plane cancelled along with it; a control
+// plane that predates cascading cancellation omits it.
 type CancelResult struct {
-	Status string `json:"status"`
+	Status                 string   `json:"status"`
+	CancelledDescendantIDs []string `json:"cancelledDescendantIds"`
 }
 
-// CancelChild cancels a running child (POST /children/{id}/cancel).
-func (c *Client) CancelChild(ctx context.Context, childID string) (CancelResult, error) {
+// cancelRequest asks the control plane to cascade the cancellation to the
+// child's own descendants.
+type cancelRequest struct {
+	CancelNested bool `json:"cancelNested"`
+}
+
+// CancelChild cancels a running child (POST /children/{id}/cancel). With
+// cancelNested the control plane also cancels the child's active descendants,
+// deepest-first.
+func (c *Client) CancelChild(ctx context.Context, childID string, cancelNested bool) (CancelResult, error) {
 	var out CancelResult
-	if err := c.doJSON(ctx, "POST", "/children/"+url.PathEscape(childID)+"/cancel", nil, &out); err != nil {
+	body := cancelRequest{CancelNested: cancelNested}
+	if err := c.doJSON(ctx, "POST", "/children/"+url.PathEscape(childID)+"/cancel", body, &out); err != nil {
 		return CancelResult{}, err
 	}
 	return out, nil

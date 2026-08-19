@@ -172,7 +172,7 @@ gcloud compute instances create bridge-vm \
   SpawnChild(ctx, SpawnChildRequest) (SpawnChildResult, error)
   ListChildren(ctx) ([]ChildSummary, error)
   GetChild(ctx, childID, ChildDetailOptions) (ChildDetail, error)
-  CancelChild(ctx, childID) (CancelResult, error)
+  CancelChild(ctx, childID, cancelNested) (CancelResult, error)
   SlackNotify(ctx, SlackNotifyRequest) (SlackNotifyResult, error)
   UploadMedia(ctx, UploadMediaRequest) (MediaResult, error)
   ```

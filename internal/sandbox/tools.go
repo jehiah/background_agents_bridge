@@ -327,7 +327,14 @@ func runSpawnTask(ctx context.Context, c *controlplane.Client, args map[string]a
 
 func runCancelTask(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	taskID := argStr(args, "taskId")
-	result, err := c.CancelChild(ctx, taskID)
+	// Cascading is the default: a cancelled task whose own children keep running
+	// leaves orphaned sandboxes behind. The tool schema defaults it too, so the
+	// arg is normally present; this covers a direct `bridge tool` invocation.
+	cancelNested := true
+	if v := argBoolPtr(args, "cancelNested"); v != nil {
+		cancelNested = *v
+	}
+	result, err := c.CancelChild(ctx, taskID, cancelNested)
 	if err != nil {
 		if e, ok := apiErr(err); ok {
 			switch e.StatusCode {
@@ -341,5 +348,9 @@ func runCancelTask(ctx context.Context, c *controlplane.Client, args map[string]
 		return "Failed to cancel task: " + err.Error()
 	}
 	status := orDefault(result.Status, "cancelled")
-	return fmt.Sprintf("Task %q cancelled successfully. Status: %s", taskID, strings.ToUpper(status))
+	nested := ""
+	if n := len(result.CancelledDescendantIDs); n > 0 {
+		nested = fmt.Sprintf(" Also cancelled %d nested task(s).", n)
+	}
+	return fmt.Sprintf("Task %q cancelled successfully.%s Status: %s", taskID, nested, strings.ToUpper(status))
 }
