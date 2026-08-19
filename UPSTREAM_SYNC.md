@@ -106,11 +106,13 @@ between still need review):
 
 | `b3491348` Extract OpenCode message attribution (#1389) | **Ported** — a refactor with no behaviour change. The per-prompt acceptance rules (user-message ids, allowed assistants, correlated compaction summaries, the compacted flag, and the post-prompt id comparison) move out of `streamState` into a `messageAttribution` type in `internal/bridge/attribution.go`. Its `assistantDisposition` folds the duplicated conditions at both call sites — the live stream and the final-state reconciliation pass — into one three-way answer: reject, error-only (a correlated summary, whose error is surfaced but whose text is not), or output. `idIsAfter` sits next to `identifier` so the ordering comparison reads as intent. Worth taking rather than skipping: `e89fb209` had to fix the same condition in three places. |
 
+| `0e6ed9a9` Split sandbox runtime entrypoint (#1345) | Excluded — a pure decomposition of `entrypoint.py`, the boot orchestrator this port does not implement: 2,523 lines become an 83-line CLI plus new `agent_bridge_process`, `boot_warnings`, `browser_desktop`, `code_server`, `opencode_server`, `repository_bootstrap`, `runtime_config`, and `supervisor` modules, with the three collaborators injected into `SandboxSupervisor`. No behaviour change and nothing that touches the bridge or the tools. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `b3491348`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `0e6ed9a9`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
