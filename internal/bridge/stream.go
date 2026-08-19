@@ -458,6 +458,18 @@ func (s *streamState) parentErrorEventOnce(err any) event {
 	return errorEvent(msg, s.messageID)
 }
 
+// compactionFallbackAccepts reports whether the post-compaction fallback may
+// claim an assistant message. Compaction rewrites the message chain, so parentID
+// correlation stops matching and acceptance falls back to unparented assistant
+// messages. OpenCode also reports the session's full history (over SSE and from
+// the message-list API), so the fallback has to be scoped to messages created
+// during this prompt or prior turns' output would be replayed as current output.
+// Ascending OpenCode IDs order by creation time, making an ID comparison against
+// this prompt's user message exactly that scope.
+func (s *streamState) compactionFallbackAccepts(ocMsgID string) bool {
+	return s.compactionOccurred && ocMsgID > s.opencodeMessageID
+}
+
 // handleMessageUpdated authorizes assistant messages (parent or child), surfaces
 // message-level errors, and replays any parts buffered before authorization.
 func (s *streamState) handleMessageUpdated(b *AgentBridge, props map[string]any, emit func(event)) {
@@ -481,7 +493,7 @@ func (s *streamState) handleMessageUpdated(b *AgentBridge, props map[string]any,
 			// reaches the transcript. Emitting here puts the error in order with
 			// the surrounding token and step events.
 			belongsToPrompt := parentMatches || s.correlatedCompactionSummaryIDs[ocMsgID] ||
-				(s.compactionOccurred && !isCompactionSummary)
+				(!isCompactionSummary && s.compactionFallbackAccepts(ocMsgID))
 			if belongsToPrompt && truthy(info["error"]) {
 				if e := s.parentErrorEventOnce(info["error"]); e != nil {
 					b.log.Error("bridge.message_error", "error_msg", e["error"], "oc_msg_id", ocMsgID)
@@ -491,7 +503,7 @@ func (s *streamState) handleMessageUpdated(b *AgentBridge, props map[string]any,
 			// The compaction summary is internal context, not assistant output,
 			// and its parentID — the compaction user message — matches, so
 			// parentID alone cannot exclude it.
-			if !isCompactionSummary && (parentMatches || s.compactionOccurred) {
+			if !isCompactionSummary && (parentMatches || s.compactionFallbackAccepts(ocMsgID)) {
 				s.allowedAssistantMsgIDs[ocMsgID] = true
 				for _, pp := range s.popPending(ocMsgID) {
 					for _, e := range s.handlePart(pp.part, pp.delta, false) {
@@ -738,10 +750,15 @@ func (b *AgentBridge) fetchFinalMessageState(ctx context.Context, s *streamState
 		msgID := gstr(info, "id")
 		parentMatches := s.userMessageIDs[gstr(info, "parentID")]
 		inTracked := s.allowedAssistantMsgIDs[msgID]
-		// The compaction summary is never accepted: its text is internal context,
-		// and its parentID (the compaction user message) matches.
+		// The compaction fallback is limited to messages created after this
+		// prompt's user message: the API returns the whole session history, and
+		// re-emitting a prior turn's text here would overwrite this prompt's
+		// final output with a stale message. The compaction summary is never
+		// accepted: its text is internal context, and its parentID (the
+		// compaction user message) matches.
 		isCompactionSummary := info["summary"] == true
-		shouldAccept := !isCompactionSummary && (parentMatches || inTracked || s.compactionOccurred)
+		shouldAccept := !isCompactionSummary &&
+			(parentMatches || inTracked || s.compactionFallbackAccepts(msgID))
 		if !shouldAccept {
 			continue
 		}

@@ -2,9 +2,12 @@ package bridge
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +37,53 @@ func feed(t *testing.T, b *AgentBridge, s *streamState, etype string, props map[
 // testStreamState is the production state seeded with the ids the tests use.
 func testStreamState() *streamState {
 	return newStreamState("cp-msg", "msg_user", "ses_parent")
+}
+
+// promptTSMs anchors the ID-boundary tests: the prompt's user message sits at a
+// fixed (timestamp, counter) so neighbouring IDs can be placed exactly around it.
+const promptTSMs = 1_754_000_000_000
+
+var promptUserMsgID = ocMessageID(promptTSMs, 2, 'p')
+
+// ocMessageID builds a valid OpenCode ascending message ID at a chosen creation
+// point, mirroring identifier.ascending's encoding. Deterministic inputs let
+// boundary tests place IDs immediately before or after a prompt's user message
+// instead of relying on ad-hoc strings that happen to compare the right way.
+func ocMessageID(timestampMs, counter int64, suffix byte) string {
+	encoded := (timestampMs*0x1000 + counter) & 0xFFFFFFFFFFFF
+	buf := []byte{
+		byte(encoded >> 40), byte(encoded >> 32), byte(encoded >> 24),
+		byte(encoded >> 16), byte(encoded >> 8), byte(encoded),
+	}
+	return "msg_" + hex.EncodeToString(buf) + strings.Repeat(string(suffix), randomLength)
+}
+
+// testStreamStateAt builds a stream state whose prompt user message is the given
+// OpenCode ID, for tests that depend on ID ordering.
+func testStreamStateAt(opencodeMessageID string) *streamState {
+	s := newStreamState("cp-msg", opencodeMessageID, "ses_parent")
+	s.userMessageIDs[opencodeMessageID] = true
+	return s
+}
+
+// TestOCMessageIDMatchesRealGeneratorFormat keeps the fixture helper honest: the
+// boundary tests are only meaningful if they exercise the real ID contract.
+func TestOCMessageIDMatchesRealGeneratorFormat(t *testing.T) {
+	real, err := (&identifier{}).ascending("message")
+	if err != nil {
+		t.Fatalf("ascending: %v", err)
+	}
+	encoded, err := strconv.ParseInt(real[4:16], 16, 64)
+	if err != nil {
+		t.Fatalf("parse %q: %v", real[4:16], err)
+	}
+	rebuilt := ocMessageID(encoded/0x1000, encoded%0x1000, 'a')
+	if rebuilt[:16] != real[:16] {
+		t.Errorf("prefix = %q, want %q", rebuilt[:16], real[:16])
+	}
+	if len(rebuilt) != len(real) {
+		t.Errorf("len = %d, want %d", len(rebuilt), len(real))
+	}
 }
 
 // TestStreamTextAndToolCorrelation covers the core happy path: an assistant
@@ -184,18 +234,19 @@ func TestStreamTracksActualUserMessageID(t *testing.T) {
 // assistant messages are authorized even without a parentID match.
 func TestStreamCompactionAuthorizes(t *testing.T) {
 	b := testBridge()
-	s := testStreamState()
+	s := testStreamStateAt(promptUserMsgID)
 	c := &collector{}
+	postID := ocMessageID(promptTSMs+5_000, 1, 'r')
 
 	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
 	if !s.compactionOccurred {
 		t.Fatal("compactionOccurred not set")
 	}
 	feed(t, b, s, "message.updated", map[string]any{
-		"info": map[string]any{"id": "msg_post", "sessionID": "ses_parent", "parentID": "changed", "role": "assistant"},
+		"info": map[string]any{"id": postID, "sessionID": "ses_parent", "parentID": "changed", "role": "assistant"},
 	}, c.emit)
 	feed(t, b, s, "message.part.updated", map[string]any{
-		"part": map[string]any{"type": "text", "id": "p1", "messageID": "msg_post", "sessionID": "ses_parent", "text": "after"},
+		"part": map[string]any{"type": "text", "id": "p1", "messageID": postID, "sessionID": "ses_parent", "text": "after"},
 	}, c.emit)
 
 	// Compaction itself is announced, so the timeline can show the gap.
@@ -437,8 +488,9 @@ func overflowError(message string) map[string]any {
 // open and the prompt must finish clean.
 func TestStreamContextOverflowCompacts(t *testing.T) {
 	b := testBridge()
-	s := testStreamState()
+	s := testStreamStateAt(promptUserMsgID)
 	c := &collector{}
+	postID := ocMessageID(promptTSMs+5_000, 1, 'r')
 
 	if stop := feed(t, b, s, "session.error", map[string]any{
 		"sessionID": "ses_parent",
@@ -457,10 +509,10 @@ func TestStreamContextOverflowCompacts(t *testing.T) {
 
 	// Work resumes on a rewritten message chain, then the session goes idle.
 	feed(t, b, s, "message.updated", map[string]any{
-		"info": map[string]any{"id": "msg_post", "sessionID": "ses_parent", "parentID": "changed", "role": "assistant"},
+		"info": map[string]any{"id": postID, "sessionID": "ses_parent", "parentID": "changed", "role": "assistant"},
 	}, c.emit)
 	feed(t, b, s, "message.part.updated", map[string]any{
-		"part": map[string]any{"type": "text", "id": "p1", "messageID": "msg_post", "sessionID": "ses_parent", "text": "after"},
+		"part": map[string]any{"type": "text", "id": "p1", "messageID": postID, "sessionID": "ses_parent", "text": "after"},
 	}, c.emit)
 	if stop := feed(t, b, s, "session.idle", map[string]any{"sessionID": "ses_parent"}, c.emit); !stop {
 		t.Fatal("expected stop=true on parent idle")
@@ -618,10 +670,170 @@ func TestStreamCompactionSummaryNotForwarded(t *testing.T) {
 	}
 }
 
+// TestStreamCompactionFallbackSkipsPriorPromptMessage verifies the fallback does
+// not claim messages that predate the prompt. OpenCode reports the session's
+// whole history, so forwarding them would replay an earlier turn's text as this
+// prompt's output.
+func TestStreamCompactionFallbackSkipsPriorPromptMessage(t *testing.T) {
+	b := testBridge()
+	s := testStreamStateAt(promptUserMsgID)
+	c := &collector{}
+	priorAssistantID := ocMessageID(promptTSMs-60_000, 1, 'q')
+	priorUserID := ocMessageID(promptTSMs-61_000, 1, 'u')
+
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "text", "id": "part-prior", "sessionID": "ses_parent",
+			"messageID": priorAssistantID, "text": "Stale text from an earlier turn",
+		},
+	}, c.emit)
+	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": priorAssistantID, "role": "assistant",
+			"sessionID": "ses_parent", "parentID": priorUserID,
+		},
+	}, c.emit)
+
+	if s.allowedAssistantMsgIDs[priorAssistantID] {
+		t.Error("prior-turn message was authorized")
+	}
+	if len(s.pendingParts[priorAssistantID]) != 1 {
+		t.Errorf("prior-turn part not left buffered: %v", s.pendingParts)
+	}
+	// Only the compaction marker; the stale text never reaches the transcript.
+	if got := c.types(); !equalStrings(got, []string{"context_compacted"}) {
+		t.Fatalf("event types = %v, want just the compaction marker", got)
+	}
+}
+
+// TestStreamCompactionFallbackAcceptsLaterMessage verifies a continuation
+// written after this prompt's user message is still forwarded once parentID
+// correlation stops matching.
+func TestStreamCompactionFallbackAcceptsLaterMessage(t *testing.T) {
+	b := testBridge()
+	s := testStreamStateAt(promptUserMsgID)
+	c := &collector{}
+	continuationID := ocMessageID(promptTSMs+5_000, 1, 'r')
+
+	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": continuationID, "role": "assistant", "sessionID": "ses_parent",
+			"parentID": ocMessageID(promptTSMs+4_000, 1, 'v'),
+		},
+	}, c.emit)
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "text", "id": "part-continuation", "sessionID": "ses_parent",
+			"messageID": continuationID, "text": "Continuing after compaction",
+		},
+	}, c.emit)
+
+	if !s.allowedAssistantMsgIDs[continuationID] {
+		t.Fatal("continuation message was not authorized")
+	}
+	if got := c.types(); !equalStrings(got, []string{"context_compacted", "token"}) {
+		t.Fatalf("event types = %v", got)
+	}
+	if c.events[1]["content"] != "Continuing after compaction" {
+		t.Errorf("token = %+v", c.events[1])
+	}
+}
+
+// TestStreamCompactionFallbackCounterBoundary verifies that within one
+// millisecond the encoded counter decides ordering: one tick below the prompt's
+// user message is rejected, one tick above is accepted.
+func TestStreamCompactionFallbackCounterBoundary(t *testing.T) {
+	b := testBridge()
+	s := testStreamStateAt(promptUserMsgID)
+	c := &collector{}
+	belowID := ocMessageID(promptTSMs, 1, 's')
+	aboveID := ocMessageID(promptTSMs, 3, 't')
+
+	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
+	for _, id := range []string{belowID, aboveID} {
+		feed(t, b, s, "message.updated", map[string]any{
+			"info": map[string]any{
+				"id": id, "role": "assistant", "sessionID": "ses_parent",
+				"parentID": ocMessageID(promptTSMs, 0, 'w'),
+			},
+		}, c.emit)
+	}
+
+	if s.allowedAssistantMsgIDs[belowID] {
+		t.Error("message one counter tick below the prompt was authorized")
+	}
+	if !s.allowedAssistantMsgIDs[aboveID] {
+		t.Error("message one counter tick above the prompt was not authorized")
+	}
+}
+
+// TestStreamCompactionFallbackIgnoresPriorError verifies an error on a
+// prior-turn message stays out of this prompt's output.
+func TestStreamCompactionFallbackIgnoresPriorError(t *testing.T) {
+	b := testBridge()
+	s := testStreamStateAt(promptUserMsgID)
+	c := &collector{}
+
+	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": ocMessageID(promptTSMs-60_000, 1, 'q'), "role": "assistant",
+			"sessionID": "ses_parent", "parentID": ocMessageID(promptTSMs-61_000, 1, 'u'),
+			"error": map[string]any{"name": "SomeError", "data": map[string]any{"message": "Old failure"}},
+		},
+	}, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"context_compacted"}) {
+		t.Fatalf("event types = %v, want no error from a prior turn", got)
+	}
+}
+
+// TestFetchFinalMessageStateSkipsPriorPromptMessage models the incident the
+// scoping fix addresses: the reconciliation pass reads the whole session
+// history, so an unscoped compaction fallback would backfill a prior turn's
+// text over this prompt's answer.
+func TestFetchFinalMessageStateSkipsPriorPromptMessage(t *testing.T) {
+	priorID := ocMessageID(promptTSMs-60_000, 1, 'q')
+	postID := ocMessageID(promptTSMs+5_000, 1, 'r')
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"info":  map[string]any{"id": priorID, "role": "assistant", "sessionID": "ses_parent", "parentID": "old_user"},
+				"parts": []map[string]any{{"type": "text", "id": "p1", "text": "stale answer from an earlier turn"}},
+			},
+			{
+				"info":  map[string]any{"id": postID, "role": "assistant", "sessionID": "ses_parent", "parentID": "changed"},
+				"parts": []map[string]any{{"type": "text", "id": "p2", "text": "current"}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	b := testBridge()
+	b.opencodeBaseURL = server.URL
+	b.httpClient = server.Client()
+	b.setOpencodeSessionID("ses_parent")
+
+	s := testStreamStateAt(promptUserMsgID)
+	s.compactionOccurred = true
+	c := &collector{}
+	b.fetchFinalMessageState(t.Context(), s, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"token"}) {
+		t.Fatalf("expected only the current turn's token, got %v", got)
+	}
+	if c.events[0]["content"] != "current" {
+		t.Errorf("token = %+v, want the current turn's text", c.events[0])
+	}
+}
+
 // TestFetchFinalMessageStateSkipsCompactionSummary verifies the reconciliation
 // pass applies the same rule as the live stream: after compaction every
 // assistant message is in scope except the summary itself.
 func TestFetchFinalMessageStateSkipsCompactionSummary(t *testing.T) {
+	postID := ocMessageID(promptTSMs+5_000, 1, 'r')
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode([]map[string]any{
 			{
@@ -633,7 +845,7 @@ func TestFetchFinalMessageStateSkipsCompactionSummary(t *testing.T) {
 			},
 			{
 				"info": map[string]any{
-					"id": "msg_post", "role": "assistant", "sessionID": "ses_parent", "parentID": "changed",
+					"id": postID, "role": "assistant", "sessionID": "ses_parent", "parentID": "changed",
 				},
 				"parts": []map[string]any{{"type": "text", "id": "p2", "text": "after"}},
 			},
@@ -646,7 +858,7 @@ func TestFetchFinalMessageStateSkipsCompactionSummary(t *testing.T) {
 	b.httpClient = server.Client()
 	b.setOpencodeSessionID("ses_parent")
 
-	s := testStreamState()
+	s := testStreamStateAt(promptUserMsgID)
 	s.compactionOccurred = true
 	c := &collector{}
 	b.fetchFinalMessageState(t.Context(), s, c.emit)

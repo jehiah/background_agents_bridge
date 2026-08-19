@@ -102,11 +102,13 @@ between still need review):
 
 | `6fb5e7ad` Validate child session reasoning effort (#1369) | **Ported** — the `spawn-child` tool's `reasoning` description now names the accepted values and pins the `xhigh` spelling (not `x-high`), which the model was guessing wrong. Upstream's other half is the control-plane route rejecting an unrecognized `reasoningEffort` with a 400 instead of dropping it silently; that validation lives outside this port. |
 
+| `e89fb209` Scope post-compaction message acceptance to the active prompt (#1385) | **Ported** — compaction rewrites the message chain, so parentID correlation stops matching and acceptance falls back to any non-summary assistant message. OpenCode reports the session's whole history over SSE and from the message-list API, so that fallback was claiming prior turns: their text replayed as current output, and the final-state reconciliation pass backfilled a stale answer over this prompt's real one. All three sites now go through `compactionFallbackAccepts`, which requires the message id to sort after this prompt's user message — OpenCode ids ascend by creation time, so that is exactly "created during this prompt". An error on a prior-turn message is scoped out the same way. Tests build ids with the real `identifier` encoding rather than ad-hoc strings, so the boundary cases (including the same-millisecond counter tick) are meaningful. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `6fb5e7ad`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `e89fb209`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
