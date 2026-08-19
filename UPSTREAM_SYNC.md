@@ -120,11 +120,13 @@ between still need review):
 
 | `ddae7390` Remove unused Python sig1 implementation (#1482) | Excluded — deletes `auth/service_auth.py` with its tests and golden-vector generator, leaving the TypeScript implementation as the sole authority. This port never had a sig1 signer (nothing in `internal/` references it); the bridge authenticates to the control plane with its bearer token. Nothing to delete or replace. |
 
+| `1a31be35` Interrupt supervisor restart backoff (#1445) | Excluded — a follow-up to `41bc4ca6` in the same un-ported file: `supervisor.py` gets a shutdown-aware wait so restart backoff and monitor polling stop early instead of sleeping through a shutdown. This port has no service supervisor; `bridge run-opencode` runs a single child under the caller's context, which already cancels its waits. |
+
 ### Pending review (after `5308371d`, not yet ported)
 
 | Upstream | Notes |
 | -------- | ----- |
-| everything between `5308371d` and HEAD not listed above | Next in line, starting after `ddae7390`. |
+| everything between `5308371d` and HEAD not listed above | Next in line, starting after `1a31be35`. |
 | `4147972b` PR request draft mode setting | Off-branch re-commit of the draft feature already ported; no action. |
 
 ## Reviewing new changes
