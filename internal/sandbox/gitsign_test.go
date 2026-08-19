@@ -226,39 +226,90 @@ func TestGitSignRejectsBadResponses(t *testing.T) {
 	}
 }
 
+// preflightServer is a control plane that must never be reached. It counts the
+// requests it sees so a check that regresses to running after the POST — rather
+// than before it — fails instead of quietly still passing.
+func preflightServer(t *testing.T) (url string, requests *int) {
+	t.Helper()
+	var count int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count++
+		_, _ = w.Write([]byte(armored([]byte("SSHSIG\x00fake-signature"))))
+	}))
+	t.Cleanup(server.Close)
+	return server.URL, &count
+}
+
+// assertPreflightFailure runs the signer and asserts it refused locally: an
+// error, no request, and no signature file (git reads a present .sig as a
+// successful signature, so a stale one from an earlier commit must not survive).
+func assertPreflightFailure(t *testing.T, args []string, buffer string, requests *int) {
+	t.Helper()
+	if err := GitSign(args); err == nil {
+		t.Error("want an error")
+	}
+	if *requests != 0 {
+		t.Errorf("control plane saw %d request(s); the check must run before the POST", *requests)
+	}
+	if _, err := os.Stat(buffer + ".sig"); !os.IsNotExist(err) {
+		t.Errorf("signature file exists after a failure (%v)", err)
+	}
+}
+
 func TestGitSignRejectsOversizePayload(t *testing.T) {
 	line, _ := testSSHKey(t)
+	url, requests := preflightServer(t)
+
 	dir := t.TempDir()
 	buffer := filepath.Join(dir, "commit-buffer")
 	if err := os.WriteFile(buffer, make([]byte, maxSigningPayloadBytes+1), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CONTROL_PLANE_URL", "http://127.0.0.1:1")
+	if err := os.WriteFile(buffer+".sig", []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONTROL_PLANE_URL", url)
 	t.Setenv("SANDBOX_AUTH_TOKEN", "tok")
 	t.Setenv("SESSION_ID", "ses_1")
 	t.Setenv("OPENCODE_PORT", "4096")
 
 	// The buffer is bounded before anything is sent, so a runaway commit cannot
 	// be pushed at the control plane.
-	if err := GitSign([]string{"-Y", "sign", "-n", "git", "-f", "key::" + line, "-U", buffer}); err == nil {
-		t.Error("want an error")
-	}
+	assertPreflightFailure(t, []string{"-Y", "sign", "-n", "git", "-f", "key::" + line, "-U", buffer}, buffer, requests)
 }
 
 func TestGitSignRequiresSessionConfiguration(t *testing.T) {
 	line, _ := testSSHKey(t)
-	dir := t.TempDir()
-	buffer := filepath.Join(dir, "commit-buffer")
-	if err := os.WriteFile(buffer, []byte("tree abc\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CONTROL_PLANE_URL", "")
-	t.Setenv("SANDBOX_AUTH_TOKEN", "")
-	t.Setenv("SESSION_ID", "")
-	t.Setenv("SESSION_CONFIG", "")
-	t.Setenv("OPENCODE_PORT", "4096")
+	url, requests := preflightServer(t)
 
-	if err := GitSign([]string{"-Y", "sign", "-n", "git", "-f", "key::" + line, "-U", buffer}); err == nil {
-		t.Error("want an error when the sandbox has no control-plane credentials")
+	// SESSION_ID is unset throughout, so each case exercises what config.Resolve
+	// can recover from SESSION_CONFIG (or, for no_credentials, what it cannot).
+	cases := []struct {
+		name          string
+		controlPlane  string
+		token         string
+		sessionConfig string
+	}{
+		{"no_credentials", "", "", ""},
+		{"not_json", url, "tok", "not-json"},
+		{"json_array", url, "tok", `["not","an","object"]`},
+		{"blank_session_id", url, "tok", `{"sessionId":""}`},
+		{"no_session_id", url, "tok", `{}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			buffer := filepath.Join(dir, "commit-buffer")
+			if err := os.WriteFile(buffer, []byte("tree abc\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CONTROL_PLANE_URL", tc.controlPlane)
+			t.Setenv("SANDBOX_AUTH_TOKEN", tc.token)
+			t.Setenv("SESSION_ID", "")
+			t.Setenv("SESSION_CONFIG", tc.sessionConfig)
+			t.Setenv("OPENCODE_PORT", "4096")
+
+			assertPreflightFailure(t, []string{"-Y", "sign", "-n", "git", "-f", "key::" + line, "-U", buffer}, buffer, requests)
+		})
 	}
 }
