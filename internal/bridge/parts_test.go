@@ -70,7 +70,7 @@ func TestExtractErrorMessage(t *testing.T) {
 }
 
 func TestTransformTool(t *testing.T) {
-	s := newStreamState()
+	s := testStreamState()
 
 	// Pending with no input is skipped.
 	if _, ok := s.transformTool(map[string]any{

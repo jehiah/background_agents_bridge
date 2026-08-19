@@ -44,6 +44,47 @@ type streamState struct {
 	pendingDropLogged      bool
 	trackedChildSessionIDs map[string]bool
 	compactionOccurred     bool
+
+	// correlatedCompactionSummaryIDs are the compaction summaries belonging to
+	// this prompt. Their text is never forwarded, but an error on one is.
+	correlatedCompactionSummaryIDs map[string]bool
+	// emittedErrorMessages deduplicates the parent error event, which can arrive
+	// as both a message.updated error and a session.error.
+	emittedErrorMessages map[string]bool
+	// pendingOverflowError holds a context-overflow announcement that was
+	// swallowed because compaction should follow; session.compacted clears it.
+	// Still set at idle means the promised compaction never happened.
+	pendingOverflowError string
+}
+
+// contextOverflowErrorName is the OpenCode error that announces automatic
+// compaction rather than a failure.
+const contextOverflowErrorName = "ContextOverflowError"
+
+// isContextOverflow reports whether an OpenCode NamedError is the context-limit
+// announcement.
+func isContextOverflow(e any) bool {
+	m, ok := e.(map[string]any)
+	return ok && gstr(m, "name") == contextOverflowErrorName
+}
+
+// newStreamState seeds the per-prompt correlation state. The prompt's own user
+// message id is pre-authorized so the assistant reply it parents is accepted.
+func newStreamState(messageID, ocMsgID, ocSessionID string) *streamState {
+	return &streamState{
+		messageID:              messageID,
+		opencodeMessageID:      ocMsgID,
+		opencodeSessionID:      ocSessionID,
+		cumulativeText:         map[string]string{},
+		emittedToolStates:      map[string]bool{},
+		allowedAssistantMsgIDs: map[string]bool{},
+		userMessageIDs:         map[string]bool{ocMsgID: true},
+		pendingParts:           map[string][]pendingPart{},
+		trackedChildSessionIDs: map[string]bool{},
+
+		correlatedCompactionSummaryIDs: map[string]bool{},
+		emittedErrorMessages:           map[string]bool{},
+	}
 }
 
 // streamOpencodeResponse drives a single prompt: it opens the OpenCode event
@@ -68,17 +109,7 @@ func (b *AgentBridge) streamOpencodeResponse(
 	}
 	body := buildPromptRequestBody(content, model, ocMsgID, reasoningEffort, fileParts)
 
-	s := &streamState{
-		messageID:              messageID,
-		opencodeMessageID:      ocMsgID,
-		opencodeSessionID:      ocSessionID,
-		cumulativeText:         map[string]string{},
-		emittedToolStates:      map[string]bool{},
-		allowedAssistantMsgIDs: map[string]bool{},
-		userMessageIDs:         map[string]bool{ocMsgID: true},
-		pendingParts:           map[string][]pendingPart{},
-		trackedChildSessionIDs: map[string]bool{},
-	}
+	s := newStreamState(messageID, ocMsgID, ocSessionID)
 
 	// The SSE read is bounded by an inactivity deadline: a timer cancels sseCtx
 	// if no chunk arrives within sseInactivityTimeout, and is reset per chunk.
@@ -278,31 +309,49 @@ func (b *AgentBridge) dispatchSSE(ctx context.Context, s *streamState, ev sseEve
 
 	switch etype {
 	case "message.updated":
-		s.handleMessageUpdated(props, emit)
+		s.handleMessageUpdated(b, props, emit)
 	case "message.part.updated":
 		s.handlePartUpdated(b, props, emit)
 	case "session.idle":
 		if gstr(props, "sessionID") == s.opencodeSessionID {
 			b.fetchFinalMessageState(ctx, s, emit)
+			b.emitUnrecoveredOverflow(s, emit)
 			return true, nil
 		}
 	case "session.status":
 		if gstr(props, "sessionID") == s.opencodeSessionID && gstr(gmap(props, "status"), "type") == "idle" {
 			b.fetchFinalMessageState(ctx, s, emit)
+			b.emitUnrecoveredOverflow(s, emit)
 			return true, nil
 		}
 	case "session.error":
 		esid := gstr(props, "sessionID")
 		if esid == s.opencodeSessionID {
-			msg := extractErrorMessage(props["error"])
-			if msg == "" {
-				msg = "Unknown error"
+			// With OpenCode's automatic compaction, a context overflow announces
+			// recovery rather than failure: session.compacted and more assistant
+			// work follow it. Swallow it, but remember it, so an idle that never
+			// compacted still fails the prompt.
+			if isContextOverflow(props["error"]) {
+				s.pendingOverflowError = orDefault(extractErrorMessage(props["error"]), "Context overflow")
+				b.log.Info("bridge.context_overflow_compacting", "error_msg", s.pendingOverflowError)
+				return false, nil
 			}
-			b.log.Error("bridge.session_error", "error_msg", msg)
-			emit(errorEvent(msg, s.messageID))
+			e := s.parentErrorEventOnce(props["error"])
+			b.log.Error("bridge.session_error",
+				"error_msg", extractErrorMessage(props["error"]), "deduped", e == nil)
+			if e != nil {
+				emit(e)
+			}
 			return true, nil
 		}
 		if s.trackedChildSessionIDs[esid] {
+			// Child sessions recover through the same automatic compaction, so
+			// surfacing this would fail the whole prompt spuriously.
+			if isContextOverflow(props["error"]) {
+				b.log.Info("bridge.child_context_overflow_compacting",
+					"error_msg", extractErrorMessage(props["error"]), "child_session_id", esid)
+				return false, nil
+			}
 			msg := extractErrorMessage(props["error"])
 			if msg == "" {
 				msg = "Sub-task error"
@@ -316,15 +365,46 @@ func (b *AgentBridge) dispatchSSE(ctx context.Context, s *streamState, ev sseEve
 	case "session.compacted":
 		if gstr(props, "sessionID") == s.opencodeSessionID {
 			s.compactionOccurred = true
+			s.pendingOverflowError = ""
 			b.log.Info("bridge.session_compacted", "message_id", s.messageID)
 		}
 	}
 	return false, nil
 }
 
-// handleMessageUpdated authorizes assistant messages (parent or child) and
-// replays any parts buffered before authorization.
-func (s *streamState) handleMessageUpdated(props map[string]any, emit func(event)) {
+// emitUnrecoveredOverflow fails the prompt when a swallowed context overflow's
+// promised compaction never came. Swallowing the announcement is only safe
+// because compaction normally follows it; if the session goes idle without
+// compacting and without any error emitted, reporting silent success would hide
+// a prompt that produced nothing.
+func (b *AgentBridge) emitUnrecoveredOverflow(s *streamState, emit func(event)) {
+	if s.pendingOverflowError == "" || len(s.emittedErrorMessages) > 0 {
+		return
+	}
+	b.log.Error("bridge.context_overflow_unrecovered", "error_msg", s.pendingOverflowError)
+	s.emittedErrorMessages[s.pendingOverflowError] = true
+	emit(errorEvent(s.pendingOverflowError, s.messageID))
+}
+
+// parentErrorEventOnce builds the parent error event for err, or nil when an
+// error with the same message was already emitted. The same failure reaches the
+// bridge as both a message.updated error and a session.error, and the control
+// plane should see it once.
+func (s *streamState) parentErrorEventOnce(err any) event {
+	msg := extractErrorMessage(err)
+	if msg == "" {
+		msg = "Unknown error"
+	}
+	if s.emittedErrorMessages[msg] {
+		return nil
+	}
+	s.emittedErrorMessages[msg] = true
+	return errorEvent(msg, s.messageID)
+}
+
+// handleMessageUpdated authorizes assistant messages (parent or child), surfaces
+// message-level errors, and replays any parts buffered before authorization.
+func (s *streamState) handleMessageUpdated(b *AgentBridge, props map[string]any, emit func(event)) {
 	info := gmap(props, "info")
 	msgSessionID := gstr(info, "sessionID")
 	ocMsgID := gstr(info, "id")
@@ -337,7 +417,25 @@ func (s *streamState) handleMessageUpdated(props map[string]any, emit func(event
 		parentMatches := s.userMessageIDs[gstr(info, "parentID")]
 		isCompactionSummary := info["summary"] == true
 		if role == "assistant" && ocMsgID != "" {
-			if parentMatches || (s.compactionOccurred && !isCompactionSummary) {
+			if isCompactionSummary && parentMatches {
+				s.correlatedCompactionSummaryIDs[ocMsgID] = true
+			}
+			// A message carrying an error still belongs to this prompt when it
+			// is one of our compaction summaries, even though its text never
+			// reaches the transcript. Emitting here puts the error in order with
+			// the surrounding token and step events.
+			belongsToPrompt := parentMatches || s.correlatedCompactionSummaryIDs[ocMsgID] ||
+				(s.compactionOccurred && !isCompactionSummary)
+			if belongsToPrompt && truthy(info["error"]) {
+				if e := s.parentErrorEventOnce(info["error"]); e != nil {
+					b.log.Error("bridge.message_error", "error_msg", e["error"], "oc_msg_id", ocMsgID)
+					emit(e)
+				}
+			}
+			// The compaction summary is internal context, not assistant output,
+			// and its parentID — the compaction user message — matches, so
+			// parentID alone cannot exclude it.
+			if !isCompactionSummary && (parentMatches || s.compactionOccurred) {
 				s.allowedAssistantMsgIDs[ocMsgID] = true
 				for _, pp := range s.popPending(ocMsgID) {
 					for _, e := range s.handlePart(pp.part, pp.delta, false) {
@@ -483,8 +581,11 @@ func (b *AgentBridge) fetchFinalMessageState(ctx context.Context, s *streamState
 		msgID := gstr(info, "id")
 		parentMatches := s.userMessageIDs[gstr(info, "parentID")]
 		inTracked := s.allowedAssistantMsgIDs[msgID]
+		// The compaction summary is never accepted: its text is internal context,
+		// and its parentID (the compaction user message) matches.
 		isCompactionSummary := info["summary"] == true
-		if !parentMatches && !inTracked && (!s.compactionOccurred || isCompactionSummary) {
+		shouldAccept := !isCompactionSummary && (parentMatches || inTracked || s.compactionOccurred)
+		if !shouldAccept {
 			continue
 		}
 		parts, _ := msg["parts"].([]any)
