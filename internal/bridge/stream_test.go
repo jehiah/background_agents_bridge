@@ -2,7 +2,11 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // collector accumulates emitted events for assertions.
@@ -28,18 +32,23 @@ func feed(t *testing.T, b *AgentBridge, s *streamState, etype string, props map[
 	return stop
 }
 
-func newStreamState() *streamState {
-	return &streamState{
-		messageID:              "cp-msg",
-		opencodeMessageID:      "msg_user",
-		opencodeSessionID:      "ses_parent",
-		cumulativeText:         map[string]string{},
-		emittedToolStates:      map[string]bool{},
-		allowedAssistantMsgIDs: map[string]bool{},
-		userMessageIDs:         map[string]bool{"msg_user": true},
-		pendingParts:           map[string][]pendingPart{},
-		trackedChildSessionIDs: map[string]bool{},
-	}
+// promptTSMs anchors the compaction-scope tests: the prompt starts at a fixed
+// instant so message creation times can be placed exactly around it.
+const promptTSMs = 1_754_000_000_000
+
+// promptStart is that instant as the boundary a streamState is built with.
+var promptStart = time.UnixMilli(promptTSMs)
+
+// testStreamState is the production state seeded with the ids the tests use.
+func testStreamState() *streamState {
+	return newStreamState("cp-msg", "msg_user", "ses_parent", promptStart)
+}
+
+// createdAt builds the time block OpenCode stamps on a message, offset from the
+// prompt's start. Only messages created after that boundary are in scope for the
+// post-compaction fallback, so these fixtures decide the outcome.
+func createdAt(offset time.Duration) map[string]any {
+	return map[string]any{"created": float64(promptStart.Add(offset).UnixMilli())}
 }
 
 // TestStreamTextAndToolCorrelation covers the core happy path: an assistant
@@ -47,7 +56,7 @@ func newStreamState() *streamState {
 // with the control-plane messageId.
 func TestStreamTextAndToolCorrelation(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
 
 	feed(t, b, s, "message.updated", map[string]any{
@@ -86,9 +95,9 @@ func TestStreamTextAndToolCorrelation(t *testing.T) {
 // TestStreamToolDedup verifies a (session, callID, status) is emitted only once.
 func TestStreamToolDedup(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
-	s.allowedAssistantMsgIDs["msg_a"] = true
+	s.attribution.allowAssistant("msg_a")
 
 	toolEvent := map[string]any{
 		"part": map[string]any{
@@ -108,7 +117,7 @@ func TestStreamToolDedup(t *testing.T) {
 // buffered and replayed once the message is authorized.
 func TestStreamPendingPartFlush(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
 
 	// Part for msg_b arrives before its message.updated — should buffer.
@@ -142,7 +151,7 @@ func TestStreamPendingPartFlush(t *testing.T) {
 // doesn't match our user message are not authorized.
 func TestStreamUnrelatedParentIgnored(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
 
 	feed(t, b, s, "message.updated", map[string]any{
@@ -163,7 +172,7 @@ func TestStreamUnrelatedParentIgnored(t *testing.T) {
 // still authorized.
 func TestStreamTracksActualUserMessageID(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
 
 	const actualUserID = "msg_actual_user"
@@ -190,36 +199,44 @@ func TestStreamTracksActualUserMessageID(t *testing.T) {
 // assistant messages are authorized even without a parentID match.
 func TestStreamCompactionAuthorizes(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
 
 	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
-	if !s.compactionOccurred {
+	if !s.attribution.compactionOccurred {
 		t.Fatal("compactionOccurred not set")
 	}
 	feed(t, b, s, "message.updated", map[string]any{
-		"info": map[string]any{"id": "msg_post", "sessionID": "ses_parent", "parentID": "changed", "role": "assistant"},
+		"info": map[string]any{
+			"id": "msg_post", "sessionID": "ses_parent", "parentID": "changed",
+			"role": "assistant", "time": createdAt(5 * time.Second),
+		},
 	}, c.emit)
 	feed(t, b, s, "message.part.updated", map[string]any{
 		"part": map[string]any{"type": "text", "id": "p1", "messageID": "msg_post", "sessionID": "ses_parent", "text": "after"},
 	}, c.emit)
 
-	if got := c.types(); !equalStrings(got, []string{"token"}) {
+	// Compaction itself is announced, so the timeline can show the gap.
+	if got := c.types(); !equalStrings(got, []string{"context_compacted", "token"}) {
 		t.Fatalf("expected token after compaction, got %v", got)
+	}
+	if c.events[0]["messageId"] != "cp-msg" {
+		t.Errorf("context_compacted messageId = %q", c.events[0]["messageId"])
 	}
 }
 
 // TestStreamChildSubtask verifies child-session tool parts are forwarded with
-// isSubtask=true while child text tokens are suppressed.
+// isSubtask=true while child text tokens are suppressed, and that activity seen
+// before the parent's task part is held until that part names its Task call.
 func TestStreamChildSubtask(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
 
 	feed(t, b, s, "session.created", map[string]any{
 		"info": map[string]any{"id": "ses_child", "parentID": "ses_parent"},
 	}, c.emit)
-	if !s.trackedChildSessionIDs["ses_child"] {
+	if !s.childActivity.isTracked("ses_child") {
 		t.Fatal("child session not tracked")
 	}
 
@@ -231,19 +248,124 @@ func TestStreamChildSubtask(t *testing.T) {
 	feed(t, b, s, "message.part.updated", map[string]any{
 		"part": map[string]any{"type": "text", "id": "ct", "messageID": "msg_c", "sessionID": "ses_child", "text": "secret"},
 	}, c.emit)
-	// Child tool is forwarded with isSubtask=true.
+	// Child tool waits: nothing yet says which Task call owns this child.
 	feed(t, b, s, "message.part.updated", map[string]any{
 		"part": map[string]any{
 			"type": "tool", "tool": "grep", "callID": "cc", "messageID": "msg_c", "sessionID": "ses_child",
 			"state": map[string]any{"status": "completed", "input": map[string]any{"q": "x"}},
 		},
 	}, c.emit)
+	if len(c.events) != 0 {
+		t.Fatalf("expected child activity to be held, got %v", c.types())
+	}
+
+	// The parent's task part names the child, releasing the held activity.
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "tool", "tool": "task", "callID": "tc1", "messageID": "msg_p", "sessionID": "ses_parent",
+			"state": map[string]any{
+				"status": "completed", "input": map[string]any{"prompt": "go"},
+				"metadata": map[string]any{"sessionId": "ses_child"},
+			},
+		},
+	}, c.emit)
 
 	if got := c.types(); !equalStrings(got, []string{"tool_call"}) {
 		t.Fatalf("expected only subtask tool_call, got %v", got)
 	}
-	if c.events[0]["isSubtask"] != true {
-		t.Errorf("expected isSubtask=true, got %+v", c.events[0])
+	e := c.events[0]
+	if e["isSubtask"] != true || e["childSessionId"] != "ses_child" || e["taskCallId"] != "tc1" {
+		t.Errorf("subtask tool_call not correlated: %+v", e)
+	}
+}
+
+// TestStreamTaskToolCarriesChildSession verifies the parent's own task tool_call
+// is tagged with the child session it spawned.
+func TestStreamTaskToolCarriesChildSession(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+	s.attribution.allowAssistant("msg_p")
+
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "tool", "tool": "task", "callID": "tc1", "messageID": "msg_p", "sessionID": "ses_parent",
+			"state": map[string]any{
+				"status": "completed", "input": map[string]any{"prompt": "go"},
+				"metadata": map[string]any{"sessionId": "ses_child"},
+			},
+		},
+	}, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"tool_call"}) {
+		t.Fatalf("expected task tool_call, got %v", got)
+	}
+	if c.events[0]["childSessionId"] != "ses_child" || c.events[0]["isSubtask"] != nil {
+		t.Errorf("parent task tool_call wrong: %+v", c.events[0])
+	}
+}
+
+// TestStreamChildErrorHeldUntilTask verifies a child error that arrives before
+// the task part is nested under it once known, and that an uncorrelated one is
+// still emitted when the stream ends.
+func TestStreamChildErrorHeldUntilTask(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "session.created", map[string]any{
+		"info": map[string]any{"id": "ses_child", "parentID": "ses_parent"},
+	}, c.emit)
+	feed(t, b, s, "session.error", map[string]any{
+		"sessionID": "ses_child",
+		"error":     map[string]any{"data": map[string]any{"message": "boom"}},
+	}, c.emit)
+	if len(c.events) != 0 {
+		t.Fatalf("expected child error to be held, got %v", c.types())
+	}
+
+	// No task part ever arrives: the end-of-stream flush emits it uncorrelated.
+	s.flushChildActivity(c.emit)
+	if got := c.types(); !equalStrings(got, []string{"error"}) {
+		t.Fatalf("expected flushed error, got %v", got)
+	}
+	e := c.events[0]
+	if e["error"] != "boom" || e["isSubtask"] != true || e["childSessionId"] != "ses_child" {
+		t.Errorf("flushed child error wrong: %+v", e)
+	}
+	if _, ok := e["taskCallId"]; ok {
+		t.Errorf("uncorrelated error should carry no taskCallId: %+v", e)
+	}
+}
+
+// TestStreamChildErrorAfterTaskCompletes verifies an error that trails a
+// finished task is emitted at once, nested under that task, rather than being
+// held for a Task call that will never come.
+func TestStreamChildErrorAfterTaskCompletes(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "tool", "tool": "task", "callID": "tc1", "messageID": "msg_p", "sessionID": "ses_parent",
+			"state": map[string]any{
+				"status": "completed", "input": map[string]any{"prompt": "go"},
+				"metadata": map[string]any{"sessionId": "ses_child"},
+			},
+		},
+	}, c.emit)
+	feed(t, b, s, "session.error", map[string]any{
+		"sessionID": "ses_child",
+		"error":     map[string]any{"data": map[string]any{"message": "late boom"}},
+	}, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"error"}) {
+		t.Fatalf("expected the child error, got %v", got)
+	}
+	e := c.events[0]
+	if e["error"] != "late boom" || e["childSessionId"] != "ses_child" || e["taskCallId"] != "tc1" {
+		t.Errorf("late child error not nested: %+v", e)
 	}
 }
 
@@ -251,7 +373,7 @@ func TestStreamChildSubtask(t *testing.T) {
 // event and stops the stream.
 func TestStreamParentErrorStops(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
 
 	stop := feed(t, b, s, "session.error", map[string]any{
@@ -273,7 +395,7 @@ func TestStreamParentErrorStops(t *testing.T) {
 // TestStreamSessionTitle verifies a non-default title is forwarded once.
 func TestStreamSessionTitle(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
 
 	props := map[string]any{
@@ -295,7 +417,7 @@ func TestStreamSessionTitle(t *testing.T) {
 // not forwarded.
 func TestStreamDefaultTitleSuppressed(t *testing.T) {
 	b := testBridge()
-	s := newStreamState()
+	s := testStreamState()
 	c := &collector{}
 
 	feed(t, b, s, "session.updated", map[string]any{
@@ -318,4 +440,410 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// overflowError is the shape OpenCode sends when the context limit is hit.
+func overflowError(message string) map[string]any {
+	return map[string]any{
+		"name": "ContextOverflowError",
+		"data": map[string]any{"message": message},
+	}
+}
+
+// TestStreamContextOverflowCompacts verifies a parent context overflow is an
+// announcement, not a failure: with automatic compaction the stream must stay
+// open and the prompt must finish clean.
+func TestStreamContextOverflowCompacts(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	if stop := feed(t, b, s, "session.error", map[string]any{
+		"sessionID": "ses_parent",
+		"error":     overflowError("context window exceeded"),
+	}, c.emit); stop {
+		t.Fatal("context overflow ended the stream")
+	}
+	if s.pendingOverflowError != "context window exceeded" {
+		t.Errorf("pendingOverflowError = %q", s.pendingOverflowError)
+	}
+
+	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
+	if s.pendingOverflowError != "" {
+		t.Errorf("compaction left pendingOverflowError = %q", s.pendingOverflowError)
+	}
+
+	// Work resumes on a rewritten message chain, then the session goes idle.
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": "msg_post", "sessionID": "ses_parent", "parentID": "changed",
+			"role": "assistant", "time": createdAt(5 * time.Second),
+		},
+	}, c.emit)
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{"type": "text", "id": "p1", "messageID": "msg_post", "sessionID": "ses_parent", "text": "after"},
+	}, c.emit)
+	if stop := feed(t, b, s, "session.idle", map[string]any{"sessionID": "ses_parent"}, c.emit); !stop {
+		t.Fatal("expected stop=true on parent idle")
+	}
+
+	// The overflow announcement stays swallowed; only the compaction marker and
+	// the post-compaction token reach the user.
+	if got := c.types(); !equalStrings(got, []string{"context_compacted", "token"}) {
+		t.Fatalf("expected only the post-compaction token, got %v", got)
+	}
+}
+
+// TestStreamUnrecoveredContextOverflowFails verifies the swallowed overflow is
+// surfaced when the promised compaction never arrives — reporting success for a
+// prompt that produced nothing would be worse than the original error.
+func TestStreamUnrecoveredContextOverflowFails(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "session.error", map[string]any{
+		"sessionID": "ses_parent",
+		"error":     overflowError("context window exceeded"),
+	}, c.emit)
+	if stop := feed(t, b, s, "session.status", map[string]any{
+		"sessionID": "ses_parent",
+		"status":    map[string]any{"type": "idle"},
+	}, c.emit); !stop {
+		t.Fatal("expected stop=true on parent idle status")
+	}
+
+	if got := c.types(); !equalStrings(got, []string{"error"}) {
+		t.Fatalf("expected the overflow surfaced as an error, got %v", got)
+	}
+	if c.events[0]["error"] != "context window exceeded" {
+		t.Errorf("error message = %q", c.events[0]["error"])
+	}
+}
+
+// TestStreamOverflowNotRepeatedAfterError verifies an overflow followed by a
+// real error reports the real error once, not both.
+func TestStreamOverflowNotRepeatedAfterError(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "session.error", map[string]any{
+		"sessionID": "ses_parent",
+		"error":     overflowError("context window exceeded"),
+	}, c.emit)
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": "msg_a", "sessionID": "ses_parent", "parentID": "msg_user", "role": "assistant",
+			"error": map[string]any{"data": map[string]any{"message": "kaboom"}},
+		},
+	}, c.emit)
+	feed(t, b, s, "session.idle", map[string]any{"sessionID": "ses_parent"}, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"error"}) {
+		t.Fatalf("expected one error, got %v", got)
+	}
+	if c.events[0]["error"] != "kaboom" {
+		t.Errorf("error message = %q", c.events[0]["error"])
+	}
+}
+
+// TestStreamChildContextOverflowIgnored verifies a child session's overflow is
+// dropped: it recovers through the same compaction, and surfacing it would fail
+// the whole prompt.
+func TestStreamChildContextOverflowIgnored(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "session.created", map[string]any{
+		"info": map[string]any{"id": "ses_child", "parentID": "ses_parent"},
+	}, c.emit)
+	if stop := feed(t, b, s, "session.error", map[string]any{
+		"sessionID": "ses_child",
+		"error":     overflowError("context window exceeded"),
+	}, c.emit); stop {
+		t.Fatal("child context overflow ended the stream")
+	}
+	if len(c.events) != 0 {
+		t.Fatalf("expected no events, got %v", c.types())
+	}
+}
+
+// TestStreamParentErrorDeduped verifies the same failure arriving as both a
+// message error and a session error reaches the control plane once.
+func TestStreamParentErrorDeduped(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": "msg_a", "sessionID": "ses_parent", "parentID": "msg_user", "role": "assistant",
+			"error": map[string]any{"data": map[string]any{"message": "kaboom"}},
+		},
+	}, c.emit)
+	if stop := feed(t, b, s, "session.error", map[string]any{
+		"sessionID": "ses_parent",
+		"error":     map[string]any{"data": map[string]any{"message": "kaboom"}},
+	}, c.emit); !stop {
+		t.Fatal("expected stop=true on parent session error")
+	}
+
+	if got := c.types(); !equalStrings(got, []string{"error"}) {
+		t.Fatalf("expected a single error, got %v", got)
+	}
+}
+
+// TestStreamCompactionSummaryNotForwarded verifies the compaction summary is
+// never assistant output. Its parentID is the compaction user message, which
+// matches, so parentID alone cannot exclude it — but an error on it still
+// belongs to the prompt.
+func TestStreamCompactionSummaryNotForwarded(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": "msg_summary", "sessionID": "ses_parent", "parentID": "msg_user",
+			"role": "assistant", "summary": true,
+		},
+	}, c.emit)
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "text", "id": "p1", "messageID": "msg_summary",
+			"sessionID": "ses_parent", "text": "internal context",
+		},
+	}, c.emit)
+
+	if s.attribution.isAssistantAllowed("msg_summary") {
+		t.Error("compaction summary was authorized as assistant output")
+	}
+	if !s.attribution.correlatedSummaryIDs["msg_summary"] {
+		t.Error("compaction summary was not correlated to the prompt")
+	}
+	if len(c.events) != 0 {
+		t.Fatalf("expected the summary text suppressed, got %v", c.types())
+	}
+
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": "msg_summary", "sessionID": "ses_parent", "parentID": "msg_user",
+			"role": "assistant", "summary": true,
+			"error": map[string]any{"data": map[string]any{"message": "compaction failed"}},
+		},
+	}, c.emit)
+	if got := c.types(); !equalStrings(got, []string{"error"}) {
+		t.Fatalf("expected the summary's error surfaced, got %v", got)
+	}
+}
+
+// TestStreamCompactionFallbackSkipsPriorPromptMessage verifies the fallback does
+// not claim messages that predate the prompt. OpenCode reports the session's
+// whole history, so forwarding them would replay an earlier turn's text as this
+// prompt's output.
+func TestStreamCompactionFallbackSkipsPriorPromptMessage(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "text", "id": "part-prior", "sessionID": "ses_parent",
+			"messageID": "msg_prior", "text": "Stale text from an earlier turn",
+		},
+	}, c.emit)
+	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": "msg_prior", "role": "assistant", "sessionID": "ses_parent",
+			"parentID": "msg_prior_user", "time": createdAt(-time.Minute),
+		},
+	}, c.emit)
+
+	if s.attribution.isAssistantAllowed("msg_prior") {
+		t.Error("prior-turn message was authorized")
+	}
+	if len(s.pendingParts["msg_prior"]) != 1 {
+		t.Errorf("prior-turn part not left buffered: %v", s.pendingParts)
+	}
+	// Only the compaction marker; the stale text never reaches the transcript.
+	if got := c.types(); !equalStrings(got, []string{"context_compacted"}) {
+		t.Fatalf("event types = %v, want just the compaction marker", got)
+	}
+}
+
+// TestStreamCompactionFallbackAcceptsLaterMessage verifies a continuation
+// written after this prompt's user message is still forwarded once parentID
+// correlation stops matching.
+func TestStreamCompactionFallbackAcceptsLaterMessage(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": "msg_continuation", "role": "assistant", "sessionID": "ses_parent",
+			"parentID": "msg_rewritten", "time": createdAt(5 * time.Second),
+		},
+	}, c.emit)
+	feed(t, b, s, "message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type": "text", "id": "part-continuation", "sessionID": "ses_parent",
+			"messageID": "msg_continuation", "text": "Continuing after compaction",
+		},
+	}, c.emit)
+
+	if !s.attribution.isAssistantAllowed("msg_continuation") {
+		t.Fatal("continuation message was not authorized")
+	}
+	if got := c.types(); !equalStrings(got, []string{"context_compacted", "token"}) {
+		t.Fatalf("event types = %v", got)
+	}
+	if c.events[1]["content"] != "Continuing after compaction" {
+		t.Errorf("token = %+v", c.events[1])
+	}
+}
+
+// TestStreamCompactionFallbackTimeBoundary pins the two edges of the ordering
+// rule as the stream applies it: the boundary millisecond itself is out of
+// scope, the next millisecond is in, and a message OpenCode reported without a
+// usable creation time is rejected rather than guessed at.
+func TestStreamCompactionFallbackTimeBoundary(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
+	for id, created := range map[string]map[string]any{
+		"msg_at_boundary":    createdAt(0),
+		"msg_after_boundary": createdAt(time.Millisecond),
+		"msg_untimed":        nil,
+	} {
+		info := map[string]any{
+			"id": id, "role": "assistant", "sessionID": "ses_parent", "parentID": "changed",
+		}
+		if created != nil {
+			info["time"] = created
+		}
+		feed(t, b, s, "message.updated", map[string]any{"info": info}, c.emit)
+	}
+
+	if s.attribution.isAssistantAllowed("msg_at_boundary") {
+		t.Error("message created in the boundary millisecond was authorized")
+	}
+	if !s.attribution.isAssistantAllowed("msg_after_boundary") {
+		t.Error("message created one millisecond after the boundary was not authorized")
+	}
+	if s.attribution.isAssistantAllowed("msg_untimed") {
+		t.Error("message with no creation time was authorized")
+	}
+}
+
+// TestStreamCompactionFallbackIgnoresPriorError verifies an error on a
+// prior-turn message stays out of this prompt's output.
+func TestStreamCompactionFallbackIgnoresPriorError(t *testing.T) {
+	b := testBridge()
+	s := testStreamState()
+	c := &collector{}
+
+	feed(t, b, s, "session.compacted", map[string]any{"sessionID": "ses_parent"}, c.emit)
+	feed(t, b, s, "message.updated", map[string]any{
+		"info": map[string]any{
+			"id": "msg_prior", "role": "assistant", "sessionID": "ses_parent",
+			"parentID": "msg_prior_user", "time": createdAt(-time.Minute),
+			"error": map[string]any{"name": "SomeError", "data": map[string]any{"message": "Old failure"}},
+		},
+	}, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"context_compacted"}) {
+		t.Fatalf("event types = %v, want no error from a prior turn", got)
+	}
+}
+
+// TestFetchFinalMessageStateSkipsPriorPromptMessage models the incident the
+// scoping fix addresses: the reconciliation pass reads the whole session
+// history, so an unscoped compaction fallback would backfill a prior turn's
+// text over this prompt's answer.
+func TestFetchFinalMessageStateSkipsPriorPromptMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"info": map[string]any{
+					"id": "msg_prior", "role": "assistant", "sessionID": "ses_parent",
+					"parentID": "old_user", "time": createdAt(-time.Minute),
+				},
+				"parts": []map[string]any{{"type": "text", "id": "p1", "text": "stale answer from an earlier turn"}},
+			},
+			{
+				"info": map[string]any{
+					"id": "msg_post", "role": "assistant", "sessionID": "ses_parent",
+					"parentID": "changed", "time": createdAt(5 * time.Second),
+				},
+				"parts": []map[string]any{{"type": "text", "id": "p2", "text": "current"}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	b := testBridge()
+	b.opencodeBaseURL = server.URL
+	b.httpClient = server.Client()
+	b.setOpencodeSessionID("ses_parent")
+
+	s := testStreamState()
+	s.attribution.markCompacted()
+	c := &collector{}
+	b.fetchFinalMessageState(t.Context(), s, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"token"}) {
+		t.Fatalf("expected only the current turn's token, got %v", got)
+	}
+	if c.events[0]["content"] != "current" {
+		t.Errorf("token = %+v, want the current turn's text", c.events[0])
+	}
+}
+
+// TestFetchFinalMessageStateSkipsCompactionSummary verifies the reconciliation
+// pass applies the same rule as the live stream: after compaction every
+// assistant message is in scope except the summary itself.
+func TestFetchFinalMessageStateSkipsCompactionSummary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"info": map[string]any{
+					"id": "msg_summary", "role": "assistant", "sessionID": "ses_parent",
+					"parentID": "msg_user", "summary": true, "time": createdAt(time.Second),
+				},
+				"parts": []map[string]any{{"type": "text", "id": "p1", "text": "internal context"}},
+			},
+			{
+				"info": map[string]any{
+					"id": "msg_post", "role": "assistant", "sessionID": "ses_parent",
+					"parentID": "changed", "time": createdAt(5 * time.Second),
+				},
+				"parts": []map[string]any{{"type": "text", "id": "p2", "text": "after"}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	b := testBridge()
+	b.opencodeBaseURL = server.URL
+	b.httpClient = server.Client()
+	b.setOpencodeSessionID("ses_parent")
+
+	s := testStreamState()
+	s.attribution.markCompacted()
+	c := &collector{}
+	b.fetchFinalMessageState(t.Context(), s, c.emit)
+
+	if got := c.types(); !equalStrings(got, []string{"token"}) {
+		t.Fatalf("expected one token, got %v", got)
+	}
+	if c.events[0]["content"] != "after" {
+		t.Errorf("token = %+v, want the post-compaction text", c.events[0])
+	}
 }

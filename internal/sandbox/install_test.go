@@ -28,10 +28,32 @@ func TestInstall(t *testing.T) {
 	t.Setenv("GIT_CONFIG_SYSTEM", sysCfg)
 	t.Setenv("GIT_CONFIG_GLOBAL", globCfg)
 
+	// A tool this bridge wrote under its old name, plus a file it did not write.
+	toolsPath := filepath.Join(home, ".config", "opencode", "tools")
+	if err := os.MkdirAll(toolsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	renamed := filepath.Join(toolsPath, "spawn-task.js")
+	foreign := filepath.Join(toolsPath, "someone-elses.js")
+	if err := os.WriteFile(renamed, []byte(generatedHeader+"// stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(foreign, []byte("// hand written\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	Install(discardLogger())
 
+	// The renamed tool is gone — left in place it would advertise a name
+	// `bridge tool` no longer answers to — and the foreign file survives.
+	if _, err := os.Stat(renamed); !os.IsNotExist(err) {
+		t.Errorf("stale tool file survived install (%v)", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("install removed a file it did not write: %v", err)
+	}
+
 	// Tools were written.
-	toolsPath := filepath.Join(home, ".config", "opencode", "tools")
 	for _, name := range ToolNames() {
 		p := filepath.Join(toolsPath, name+".js")
 		if _, err := os.Stat(p); err != nil {

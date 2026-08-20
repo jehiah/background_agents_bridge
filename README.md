@@ -32,25 +32,39 @@ runs in one of several modes, selected by the first argument:
 | `bridge run-opencode` | Launch `opencode serve` as a child process **and** chain into `connect-opencode` in the same process, so a single command supervises both. |
 | `bridge git-credential <get\|store\|erase>` | A [git credential helper](https://git-scm.com/docs/gitcredentials#_custom_helpers): brokers a fresh SCM token from the control plane on each git op (no caching). |
 | `bridge tool <name>` | Execute one OpenCode tool — reads JSON args on stdin, proxies to the control plane, writes the agent-facing result on stdout. |
-| `bridge install` | Run the self-install steps only (credential helper + tool files). |
+| `bridge git-sign <ssh-keygen args>` | The delegated commit signer git invokes as `gpg.ssh.program`: POSTs the unsigned commit buffer to the control plane and writes back the SSH signature. Any invocation that isn't `-Y sign -n git` execs the stock `ssh-keygen`. |
+| `bridge install` | Run the self-install steps only (credential helper + tool files + wrapper scripts). |
 
 ### `connect-opencode`
 
 - **WebSocket connection** to the control plane Durable Object, including
   reconnection, **heartbeat**, **event forwarding** (tool calls, token streams,
   status updates), and **command handling** (prompt, stop, snapshot).
-- **Git identity configuration** per prompt author.
+- **Git identity configuration** per prompt author. The control plane says whether
+  the prompt is attributed to a user or agent-only, and whether commits are
+  signed; the bridge writes the matching `author.*`/`committer.*`/`gpg.*` global
+  git config before each prompt runs. The signing key itself never enters the
+  sandbox — only the public key, plus git pointed at the `oi-git-sign` shim.
+  Commits with no attributed user are authored by `OpenInspect
+  <open-inspect@noreply.github.com>`; a deployment substitutes its own bot by
+  setting `openinspect.name` / `openinspect.email` in git config (each falls
+  back independently, and the lookup is unscoped, so a repository-local value
+  wins).
 - **Self-install** on startup:
   - registers `bridge git-credential` as git's `credential.helper`
     (`git config --system credential.helper "bridge git-credential"`)
+  - drops two shell shims into the first directory on `$PATH`: a `gh` wrapper
+    that provisions `GITHUB_TOKEN` before exec'ing the real `gh`, and
+    `oi-git-sign`, which execs `bridge git-sign`
   - writes an OpenCode tool definition for each tool into
     `~/.config/opencode/tools/` — a thin `.js` shim that shells back into
-    `bridge tool <name>`.
+    `bridge tool <name>` — and deletes any generated tool file it no longer
+    writes, so a tool renamed between boots does not linger under its old name.
 
 ### Tools
 
 `bridge tool <name>` and the generated shims cover: `create-pull-request`,
-`spawn-task`, `get-task-status`, `cancel-task`, `slack-notify`, and
+`spawn-child`, `get-child-status`, `cancel-child`, `slack-notify`, and
 `image-upload`. The Go binary is the single source of truth for both the tool
 definitions (name, description, args schema) and their execution.
 
@@ -77,6 +91,28 @@ is read from the `OPENCODE_CONFIG_CONTENT` env var; if unset, a default of
 `{"permission":{"*":"allow"}}` is supplied so opencode still boots in a
 sandboxed VM. The bridge polls 127.0.0.1:`<opencode-port>` for up to
 `--opencode-wait` seconds (default 30) before dialing the control plane.
+
+Before opencode starts, this mode installs the session's **managed skills**: it
+fetches the control plane's session-bound skill set, re-validates it locally
+(paths, sizes, SHA-256s, names, modes), rejects names that would collide with
+skills discovered in the image, the checkouts, the workdir, or `$HOME`, and swaps
+the verified tree into `<opencode global config dir>/skills` atomically. The
+destination follows OpenCode's own rules: `$OPENCODE_CONFIG_DIR`, else
+`$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`. With no
+`CONTROL_PLANE_URL` or session id the step is skipped; any other failure aborts
+the boot rather than start opencode against an unverified skills tree. Skills are
+installed once per boot — opencode restarts reuse the tree.
+
+Also before opencode starts, this mode resolves any missing **session diff
+baseline**. The baseline is the commit each checkout is compared against for the
+lifetime of the session; the control plane normally supplies it per repository
+(`base_sha` in `SESSION_CONFIG.repositories`, which the VM persists to
+`/etc/oi/repositories.json` and passes through into the repo manifest). When an
+entry has none, the bridge reads the checkout's `HEAD` once — before the agent
+can commit anything — and writes it back into both the manifest and the
+persisted list, so a resumed session keeps the original baseline. A checkout
+whose HEAD cannot be read is left without one and is reported as unavailable in
+the diff instead of blocking the boot.
 
 The short-lived modes (`git-credential`, `tool`) are spawned by git and OpenCode
 rather than run by hand; they resolve their configuration from the inherited
@@ -124,7 +160,7 @@ gcloud compute instances create bridge-vm \
 
 ## Layout
 
-- `cmd/bridge` — subcommand dispatch (`connect-opencode` | `run-opencode` | `git-credential` | `tool` | `install`).
+- `cmd/bridge` — subcommand dispatch (`connect-opencode` | `run-opencode` | `git-credential` | `tool` | `git-sign` | `install`).
 - `internal/config` — flag→env→GCE-metadata resolution shared by every mode.
 - `internal/gcpmeta` — minimal GCE metadata client.
 - `internal/controlplane` — the typed control-plane client: one method per
@@ -137,16 +173,24 @@ gcloud compute instances create bridge-vm \
   SpawnChild(ctx, SpawnChildRequest) (SpawnChildResult, error)
   ListChildren(ctx) ([]ChildSummary, error)
   GetChild(ctx, childID, ChildDetailOptions) (ChildDetail, error)
-  CancelChild(ctx, childID) (CancelResult, error)
+  CancelChild(ctx, childID, cancelNested) (CancelResult, error)
   SlackNotify(ctx, SlackNotifyRequest) (SlackNotifyResult, error)
   UploadMedia(ctx, UploadMediaRequest) (MediaResult, error)
   ```
 
-- `internal/sandbox` — sandbox-side glue: the credential helper, the
-  `bridge tool` dispatch and agent-facing formatting, and the self-install of the
-  credential helper and OpenCode tool files.
+- `internal/sandbox` — sandbox-side glue: the credential helper, the delegated
+  commit signer, the `bridge tool` dispatch and agent-facing formatting, and the
+  self-install of the credential helper, shims, and OpenCode tool files.
 - `internal/bridge` — the `connect-opencode`-mode WebSocket bridge (reconnect loop,
   heartbeat, event forwarding, command handling, git identity + push).
+- `internal/sessiondiff` — the durable session diff viewer: the git-backed
+  collector (bounded per-file patches against the session baseline), the
+  coalescing refresh worker (one upload per idle terminal prompt, plus the
+  control plane's `refresh_diff` command), the diff endpoint client, and the
+  boot-time baseline resolution above.
+- `internal/skills` — control-plane-managed OpenCode skills: fetch, local
+  validation of the untrusted installation document, discovery-root collision
+  checks, and the journalled atomic install (`run-opencode` boot step).
 
 ## Design notes
 

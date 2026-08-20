@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
@@ -46,59 +47,147 @@ func (b *AgentBridge) findRepoDir() (string, bool) {
 	return "", false
 }
 
-// configureGitIdentity sets git user.name/user.email for commit attribution in
-// every member checkout under the workspace (git config --local per checkout,
-// matching the multi-repo upstream). Failures are logged but not fatal.
-func (b *AgentBridge) configureGitIdentity(ctx context.Context, user GitUser) {
-	b.log.Debug("git.identity_configure", "git_name", user.Name, "git_email", user.Email)
-
-	repoDirs := b.memberCheckouts()
-	if len(repoDirs) == 0 {
-		b.log.Debug("git.identity_skip", "reason", "no_repo_configured")
-		return
-	}
-
-	run := func(dir string, args ...string) error {
-		cctx, cancel := context.WithTimeout(ctx, gitConfigTimeout)
-		defer cancel()
-		c := exec.CommandContext(cctx, "git", append([]string{"config", "--local"}, args...)...)
-		c.Dir = dir
-		var stderr bytes.Buffer
-		c.Stderr = &stderr
-		return c.Run()
-	}
-
-	for _, dir := range repoDirs {
-		if err := run(dir, "user.name", user.Name); err != nil {
-			b.log.Error("git.identity_error", "exc", err)
-			return
-		}
-		if err := run(dir, "user.email", user.Email); err != nil {
-			b.log.Error("git.identity_error", "exc", err)
-			return
-		}
-	}
-}
-
-// memberCheckouts lists every checkout directory (parent of a "*/.git" entry)
-// under the workspace, sorted for determinism. Mirrors the Python
-// repo_path.glob("*/.git") enumeration used for per-repo identity config.
-func (b *AgentBridge) memberCheckouts() []string {
-	entries, err := os.ReadDir(b.workspacePath)
+// configureGitIdentity installs the commit attribution and signing settings for
+// one prompt. A nil user is agent-only attribution (see promptGitAuthor).
+//
+// Upstream writes these into every member checkout with `git config --local`;
+// this port writes them once with `--global` (see UPSTREAM_SYNC.md). The
+// settings are session-wide, nothing in the sandbox writes a local identity
+// that could shadow them, and the global values also cover repositories the
+// agent clones or creates outside the manifest.
+//
+// Failures are returned, not swallowed: a commit made with the wrong author, or
+// unsigned under a signing deployment, is worse than a refused prompt.
+func (b *AgentBridge) configureGitIdentity(ctx context.Context, user *GitUser, agent GitUser) error {
+	config, err := b.fetchSigningConfig(ctx)
 	if err != nil {
-		return nil
+		return err
 	}
-	var dirs []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(b.workspacePath, e.Name(), ".git")); err == nil {
-			dirs = append(dirs, filepath.Join(b.workspacePath, e.Name()))
-		}
-	}
-	return dirs
+	// Log the identity that is about to be written, not just whether one was
+	// supplied: "attributed=false" alone cannot tell a deployment whether its
+	// commits carry the agent fallback because the control plane sent
+	// agent-only, or because the fallback itself is misconfigured.
+	effective, source := effectiveGitUser(config, user, agent)
+	b.log.Debug("git.identity_configure",
+		"signing_enabled", config.Enabled, "attributed", user != nil,
+		"identity_source", source,
+		"user_name", effective.Name, "user_email", effective.Email,
+		"agent_name", agent.Name, "agent_email", agent.Email,
+		"committer_name", config.CommitterName, "committer_email", config.CommitterEmail)
+	return b.applySigningConfig(ctx, config, user, agent)
 }
+
+// effectiveGitUser resolves the identity commits are actually made under, and
+// names where it came from. applySigningConfig writes what this returns, so the
+// log above cannot drift from what lands in git config.
+func effectiveGitUser(config signingConfig, author *GitUser, agent GitUser) (GitUser, string) {
+	if author != nil {
+		return *author, "prompt_author"
+	}
+	if config.Enabled {
+		// Without a trusted user to attribute to, the machine identity authors
+		// the commit too, so the signature and the author agree.
+		return GitUser{Name: config.CommitterName, Email: config.CommitterEmail}, "signing_committer"
+	}
+	return agent, "agent"
+}
+
+// agentGitUser is the identity that stands in for the agent itself: the author
+// of an agent-only commit, and the filler for a legacy prompt that carries only
+// half of the scmName/scmEmail pair.
+//
+// It defaults to fallbackGitUser, but a sandbox image or a repository setup
+// script can name the deployment's own bot by setting openinspect.name and
+// openinspect.email in git config. Each field falls back independently, and a
+// blank value is treated as unset. The lookup is unscoped, so a repository-local
+// value wins over the global one when the bridge is running inside a checkout.
+//
+// A git that cannot be run at all leaves the defaults in place; the write side
+// (applySigningConfig) is where a broken git config surfaces as an error.
+func (b *AgentBridge) agentGitUser(ctx context.Context) GitUser {
+	user := fallbackGitUser
+	if name := b.gitConfigValue(ctx, "openinspect.name"); name != "" {
+		user.Name = name
+	}
+	if email := b.gitConfigValue(ctx, "openinspect.email"); email != "" {
+		user.Email = email
+	}
+	if user != fallbackGitUser {
+		b.log.Debug("git.agent_identity_override", "name", user.Name, "email", user.Email)
+	}
+	return user
+}
+
+// gitConfigValue reads one git config key, returning "" when it is unset (git
+// exits 1) or unreadable. Only the first line is used, so a multi-valued key
+// behaves like `git config --get`.
+func (b *AgentBridge) gitConfigValue(ctx context.Context, key string) string {
+	ctx, cancel := context.WithTimeout(ctx, gitConfigTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "git", "config", "--get", key).Output()
+	if err != nil {
+		return ""
+	}
+	value, _, _ := strings.Cut(string(out), "\n")
+	return strings.TrimSpace(value)
+}
+
+// promptGitAuthor resolves the commit author a prompt asks for. The control
+// plane states the mode explicitly (#1030): "agent-only" returns nil, so
+// commits are attributed to the agent, and "attributed-user" carries the
+// trusted GitHub user's name and email. An identity that is present but
+// unparseable is an error rather than a silent fallback — committing under the
+// wrong name is worse than refusing the prompt.
+//
+// Older control planes omit gitIdentity and send scmName/scmEmail instead; that
+// legacy shape is still accepted so this port keeps working against them, with
+// agent standing in for whichever half of the pair is missing.
+func promptGitAuthor(author commandAuthor, agent GitUser) (*GitUser, error) {
+	if identity := author.GitIdentity; identity != nil {
+		switch identity.Mode {
+		case "agent-only":
+			return nil, nil
+		case "attributed-user":
+			name := strings.TrimSpace(identity.Name)
+			email := strings.TrimSpace(identity.Email)
+			if name == "" || email == "" {
+				return nil, errInvalidGitIdentity
+			}
+			return &GitUser{Name: name, Email: email}, nil
+		default:
+			return nil, errInvalidGitIdentity
+		}
+	}
+	if author.SCMName == "" && author.SCMEmail == "" {
+		return nil, nil
+	}
+	return &GitUser{
+		Name:  orDefault(author.SCMName, agent.Name),
+		Email: orDefault(author.SCMEmail, agent.Email),
+	}, nil
+}
+
+// maxAuthorLogBytes bounds the logged author payload. The real one is a handful
+// of short strings; the bound is only there so a malformed command cannot flood
+// the log.
+const maxAuthorLogBytes = 1024
+
+// truncateForLog caps a log value on a rune boundary, so a clipped value is
+// still valid UTF-8.
+func truncateForLog(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit] + "…"
+}
+
+// errInvalidGitIdentity matches the upstream message so the control plane sees
+// the same execution_complete error text from either runtime.
+var errInvalidGitIdentity = errors.New("Invalid prompt Git identity") //nolint:staticcheck // ST1005: wire-compatible message
 
 // pushRequest is a provider-generated push spec normalized for execution.
 // Absent string fields normalize to ""; validatePushRequest decides which are

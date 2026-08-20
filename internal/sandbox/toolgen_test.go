@@ -60,6 +60,66 @@ func TestGenerateToolJS(t *testing.T) {
 	}
 }
 
+// TestSpawnChildDescriptionExcludesSubtasks guards the wording that keeps the
+// model from reading "sub-agent"/"sub-task" — in-process task delegation — as a
+// request for a child session in its own sandbox. Spawning one is expensive and
+// unattended, so the description has to lead with the opt-in, name the terms
+// that are not it, and say that discussing child sessions is not asking for one.
+func TestSpawnChildDescriptionExcludesSubtasks(t *testing.T) {
+	js, err := generateToolJS("spawn-child", "/bin/bridge")
+	if err != nil {
+		t.Fatalf("generateToolJS: %v", err)
+	}
+	for _, want := range []string{
+		"Use this tool ONLY when the user's current request explicitly and affirmatively asks",
+		"'sub-agent', 'subagent', 'sub agent', 'sub-task', 'subtask', or Task tool requests",
+		"use the Task tool for those in-process delegations instead.",
+		"Merely mentioning, comparing, or rejecting child sessions does not authorize this tool.",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("spawn-child description missing %q\n---\n%s", want, js)
+		}
+	}
+}
+
+// TestCreatePRDescribesMultiplePullRequests guards the one-PR-per-branch
+// contract in the prose. A session may open several pull requests, and the
+// model can only pick between updating and opening one if the tool says which
+// action a repeat call takes.
+func TestCreatePRDescribesMultiplePullRequests(t *testing.T) {
+	js, err := generateToolJS("create-pull-request", "/bin/bridge")
+	if err != nil {
+		t.Fatalf("generateToolJS: %v", err)
+	}
+	for _, want := range []string{
+		"Calling it again from the same branch updates that branch's open pull request",
+		"create a new branch with",
+		"For a stacked pull request, pass the head branch of the pull request you are stacking on.",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("create-pull-request description missing %q\n---\n%s", want, js)
+		}
+	}
+}
+
+// TestSpawnChildReasoningSpellsXhigh guards the reasoning-effort wording. The
+// control plane rejects an unrecognized value outright, so the tool has to name
+// the accepted ones and pin the spelling the model otherwise guesses wrong.
+func TestSpawnChildReasoningSpellsXhigh(t *testing.T) {
+	js, err := generateToolJS("spawn-child", "/bin/bridge")
+	if err != nil {
+		t.Fatalf("generateToolJS: %v", err)
+	}
+	for _, want := range []string{
+		"'none', 'low', 'medium', 'high', 'xhigh', and 'max'",
+		"Use 'xhigh', not 'x-high'.",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("spawn-child reasoning description missing %q\n---\n%s", want, js)
+		}
+	}
+}
+
 func TestGenerateToolJSAllTools(t *testing.T) {
 	// Every fragment must render and carry its name and the bridge bin.
 	for _, name := range toolDefNames() {

@@ -20,8 +20,18 @@ import (
 //go:embed gh_wrapper.sh
 var ghWrapperTemplate string
 
+// gitSignerTemplate is the ssh-keygen stand-in git invokes for commit signing,
+// with {{ .Exe }} substituted for the bridge binary path.
+//
+//go:embed git_signer.sh
+var gitSignerTemplate string
+
 // gitConfigTimeout bounds each `git config` invocation during install.
 const gitConfigTimeout = 10 * time.Second
+
+// GitSignerCommand is the name the commit-signing shim is installed under; it
+// is what `gpg.ssh.program` resolves to.
+const GitSignerCommand = "oi-git-sign"
 
 // Install wires the bridge into the sandbox so OpenCode and git use it. It is
 // run on `connect-opencode` startup (and exposed as `bridge install`):
@@ -49,7 +59,32 @@ func Install(log *slog.Logger) {
 
 	installCredentialHelper(log, exe)
 	installGHWrapper(log, exe)
+	installGitSigner(log, exe)
 	installTools(log, exe)
+}
+
+// installGitSigner drops the oi-git-sign shim into the first directory on $PATH.
+// Git cannot invoke `<exe> git-sign` directly — gpg.ssh.program is executed as a
+// bare program, not a command line — so the shim is what stands in for
+// ssh-keygen. It is installed unconditionally; whether commits are actually
+// signed depends on the control plane's per-session configuration.
+func installGitSigner(log *slog.Logger, exe string) {
+	dir := firstPathDir()
+	if dir == "" {
+		log.Warn("install.git_signer_no_path")
+		return
+	}
+	script, err := renderShim(gitSignerTemplate, "git_signer", exe)
+	if err != nil {
+		log.Error("install.git_signer_render_error", "exc", err)
+		return
+	}
+	path := filepath.Join(dir, GitSignerCommand)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		log.Error("install.git_signer_error", "exc", err, "path", path)
+		return
+	}
+	log.Info("install.git_signer", "path", path)
 }
 
 // installGHWrapper drops a `gh` shell wrapper into the first directory on $PATH
@@ -91,16 +126,23 @@ func firstPathDir() string {
 // absolute path to the bridge binary. The path is substituted unquoted, so a
 // path containing whitespace is rejected rather than producing a broken script.
 func ghWrapperScript(exe string) (string, error) {
+	return renderShim(ghWrapperTemplate, "gh_wrapper", exe)
+}
+
+// renderShim substitutes the bridge path into a shell shim. The path is
+// substituted unquoted, so a path containing whitespace is rejected rather than
+// producing a broken script.
+func renderShim(text, name, exe string) (string, error) {
 	if strings.ContainsAny(exe, " \t\n") {
 		return "", fmt.Errorf("bridge path %q contains whitespace", exe)
 	}
-	tmpl, err := template.New("gh_wrapper").Parse(ghWrapperTemplate)
+	tmpl, err := template.New(name).Parse(text)
 	if err != nil {
-		return "", fmt.Errorf("parse gh wrapper template: %w", err)
+		return "", fmt.Errorf("parse %s template: %w", name, err)
 	}
 	var b strings.Builder
 	if err := tmpl.Execute(&b, struct{ Exe string }{exe}); err != nil {
-		return "", fmt.Errorf("render gh wrapper: %w", err)
+		return "", fmt.Errorf("render %s: %w", name, err)
 	}
 	return b.String(), nil
 }
@@ -182,6 +224,42 @@ func installTools(log *slog.Logger, exe string) {
 			continue
 		}
 		log.Info("install.tool", "tool", name, "path", path)
+	}
+
+	pruneRenamedTools(log, dir)
+}
+
+// pruneRenamedTools deletes tool files this bridge wrote on an earlier boot but
+// no longer generates — the residue of a renamed tool (spawn-task → spawn-child).
+// A stale file still advertises the old name to opencode while `bridge tool` no
+// longer answers to it, so the agent would see a tool that always errors. Only
+// files carrying the generated banner are removed; anything hand-written or from
+// another source is left alone.
+func pruneRenamedTools(log *slog.Logger, dir string) {
+	current := make(map[string]bool, len(toolDefNames()))
+	for _, name := range toolDefNames() {
+		current[fileNameFor(name)] = true
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		log.Warn("install.tool_prune_scan_error", "exc", err, "dir", dir)
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || current[entry.Name()] || !strings.HasSuffix(entry.Name(), ".js") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		content, err := os.ReadFile(path)
+		if err != nil || !strings.HasPrefix(string(content), generatedHeader) {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			log.Warn("install.tool_prune_error", "exc", err, "path", path)
+			continue
+		}
+		log.Info("install.tool_pruned", "path", path)
 	}
 }
 

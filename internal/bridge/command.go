@@ -21,6 +21,8 @@ func (b *AgentBridge) handleCommand(ctx context.Context, cmd *command) {
 		b.gitSyncOnce.Do(func() { close(b.gitSyncDoneC) })
 	case "push":
 		b.handlePush(ctx, cmd)
+	case "refresh_diff":
+		b.diffRefresh.Request(nil)
 	case "ack":
 		if cmd.AckID != "" {
 			b.ackReceived(cmd.AckID)
@@ -38,11 +40,18 @@ func (b *AgentBridge) startPrompt(cmd *command) {
 
 	promptCtx, cancel := context.WithCancel(b.rootCtx)
 	gen := b.setPromptCancel(cancel)
+	// Hold session diff refreshes until the prompt terminates: a capture taken
+	// mid-execution would show a half-written checkout.
+	b.diffRefresh.PromptStarted()
 
 	go func() {
 		defer cancel()
 		err := b.handlePrompt(promptCtx, cmd)
 		b.clearPromptCancel(gen)
+		// Release the idle gate before requesting, so the refresh can start
+		// immediately.
+		b.diffRefresh.PromptFinished()
+		defer b.diffRefresh.Request(&messageID)
 
 		if err != nil {
 			// handlePrompt already emits execution_complete on the paths it

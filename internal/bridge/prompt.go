@@ -31,11 +31,28 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 		)
 	}()
 
-	// Attribute commits to the prompt author, falling back to the default.
-	b.configureGitIdentity(ctx, GitUser{
-		Name:  orDefault(cmd.Author.SCMName, fallbackGitUser.Name),
-		Email: orDefault(cmd.Author.SCMEmail, fallbackGitUser.Email),
-	})
+	// Attribute commits to the prompt author, falling back to the agent, and
+	// refresh the delegated signing configuration while we are at it.
+	agent := b.agentGitUser(ctx)
+	author, err := promptGitAuthor(cmd.Author, agent)
+	// The bridge attributes what it is told to attribute: an agent-only prompt
+	// is a control-plane decision (no verified SCM identity on the participant),
+	// not a bridge fallback. Log the payload that decided it, so a session whose
+	// commits land under the agent identity can be traced to the right side.
+	b.log.Debug("prompt.git_identity",
+		"message_id", messageID,
+		"mode", cmd.Author.attributionMode(),
+		"attributed", author != nil,
+		"author_payload", truncateForLog(string(cmd.Author.raw), maxAuthorLogBytes))
+	if err == nil {
+		err = b.configureGitIdentity(ctx, author, agent)
+	}
+	if err != nil {
+		outcome = "error"
+		b.log.Error("prompt.error", "exc", err, "message_id", messageID)
+		b.sendEvent(executionCompleteEvent(messageID, false, err.Error()))
+		return nil
+	}
 
 	if b.getOpencodeSessionID() == "" {
 		if err := b.createOpencodeSession(ctx); err != nil {
@@ -73,8 +90,7 @@ func (b *AgentBridge) handlePrompt(ctx context.Context, cmd *command) error {
 		b.sendEvent(e)
 	}
 
-	err := b.streamOpencodeResponse(ctx, messageID, cmd.Content, model, reasoningEffort, fileParts, emit)
-	if err != nil {
+	if err := b.streamOpencodeResponse(ctx, messageID, cmd.Content, model, reasoningEffort, fileParts, emit); err != nil {
 		outcome = "error"
 		if ctx.Err() != nil {
 			return ctx.Err() // cancelled: startPrompt emits the completion

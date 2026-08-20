@@ -7,13 +7,21 @@
 //	                                    git-credential and tool helpers below and
 //	                                    waits for the opencode TCP port to accept
 //	                                    connections before dialing the bridge
-//	bridge run-opencode [flags]         run `opencode serve` as a subprocess and
-//	                                    then chain into connect-opencode so a
-//	                                    single command supervises both
+//	bridge run-opencode [flags]         resolve any missing session diff
+//	                                    baselines, install the session's
+//	                                    control-plane managed skills, run
+//	                                    `opencode serve` as a subprocess, and then
+//	                                    chain into connect-opencode so a single
+//	                                    command supervises both
 //	bridge git-credential <get|...>     git credential helper (brokers SCM tokens)
+//	bridge git-sign [ssh-keygen args]   ssh-keygen stand-in for commit signing:
+//	                                    brokers the signature through the control
+//	                                    plane and passes everything else through
+//	                                    to the real ssh-keygen
 //	bridge tool <name>                  execute one OpenCode tool (args JSON on
 //	                                    stdin, result on stdout)
-//	bridge install                      self-install the credential helper + tools
+//	bridge install                      self-install the credential helper, the
+//	                                    gh and commit-signing shims, and the tools
 //
 // A subcommand is always required.
 //
@@ -36,11 +44,14 @@ import (
 	"syscall"
 
 	"github.com/jehiah/background_agents_bridge/internal/config"
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 	"github.com/jehiah/background_agents_bridge/internal/sandbox"
+	"github.com/jehiah/background_agents_bridge/internal/sessiondiff"
+	"github.com/jehiah/background_agents_bridge/internal/skills"
 	"golang.org/x/sync/errgroup"
 )
 
-const usageLine = "usage: bridge <connect-opencode|run-opencode|git-credential|tool|install> [flags] ..."
+const usageLine = "usage: bridge <connect-opencode|run-opencode|git-credential|git-sign|tool|install> [flags] ..."
 
 func main() {
 	// Dispatch on the first argument, which must name a subcommand.
@@ -55,6 +66,8 @@ func main() {
 	switch cmd {
 	case "git-credential":
 		runGitCredential(args)
+	case "git-sign":
+		runGitSign(args)
 	case "tool":
 		runTool(args)
 	case "install":
@@ -123,6 +136,26 @@ func runRunOpencode(argv []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Resolve the session diff baselines before opencode starts, so the viewer
+	// compares against the checkout as the session found it rather than against
+	// whatever the agent has already committed. A repository whose baseline the
+	// control plane already supplied is left alone; this only fills gaps.
+	sessiondiff.ResolveBaselines(ctx, repomanifest.ManifestPath, sessiondiff.RepositoryListPath,
+		slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()})).With(
+			"service", "sandbox", "component", "session_diff", "session_id", cfg.SessionID,
+		))
+
+	// Managed skills are boot work: install them before opencode starts so it
+	// discovers the complete tree, and fail the boot rather than run against a
+	// tree we could not verify.
+	skillsLog := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()})).With(
+		"service", "sandbox", "component", "managed_skills", "session_id", cfg.SessionID,
+	)
+	if err := materializeManagedSkills(ctx, cfg, workDir, skillsLog); err != nil {
+		skillsLog.Error("managed_skills.failed", "exc", err, "code", skills.ErrorCode(err))
+		os.Exit(1)
+	}
+
 	// errgroup cancels its context as soon as either side returns (with or
 	// without an error), so the survivor unwinds promptly. Wait() returns the
 	// first non-nil error.
@@ -162,6 +195,15 @@ func runTool(argv []string) {
 	}
 	if err := sandbox.RunTool(argv[0], os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "tool: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runGitSign brokers one commit signature through the control plane. git reads
+// stderr, so failures are reported as a bounded one-line message.
+func runGitSign(argv []string) {
+	if err := sandbox.GitSign(argv); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", sandbox.GitSignerCommand, err)
 		os.Exit(1)
 	}
 }

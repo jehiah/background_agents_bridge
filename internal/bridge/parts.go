@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"fmt"
+	"math"
 	"strings"
+	"time"
 )
 
 // Anthropic extended-thinking budgets by reasoning effort. "max" uses 31,999 —
@@ -12,13 +14,60 @@ var anthropicThinkingBudgets = map[string]int{
 	"max":  31999,
 }
 
-// anthropicAdaptiveThinkingModels use adaptive thinking + outputConfig.effort
-// rather than a fixed token budget.
-var anthropicAdaptiveThinkingModels = map[string]bool{
-	"claude-opus-4-6":   true,
-	"claude-opus-4-7":   true,
-	"claude-opus-4-8":   true,
-	"claude-sonnet-4-6": true,
+// anthropicAdaptiveThinkingFamilies are the Claude model families whose current
+// members take adaptive thinking + outputConfig.effort rather than a fixed token
+// budget. Upstream keeps an exact-id allowlist; matching the family prefix
+// instead means a new Opus/Sonnet/Fable works the day it ships, which is the
+// common case. Members that predate adaptive thinking are named below.
+var anthropicAdaptiveThinkingFamilies = []string{
+	"claude-fable-",
+	"claude-opus-",
+	"claude-sonnet-",
+}
+
+// anthropicFixedThinkingModels are family members that do not support adaptive
+// thinking and must keep the fixed budget: everything before Opus 4.6 and
+// Sonnet 4.6. Newer ids are matched by family, so this list only ever shrinks.
+var anthropicFixedThinkingModels = map[string]bool{
+	"claude-opus-4":     true,
+	"claude-opus-4-1":   true,
+	"claude-opus-4-5":   true,
+	"claude-sonnet-4":   true,
+	"claude-sonnet-4-5": true,
+}
+
+// usesAdaptiveThinking reports whether modelID takes the adaptive thinking
+// options. A trailing snapshot date is ignored so "claude-sonnet-4-5-20250929"
+// is judged as "claude-sonnet-4-5".
+func usesAdaptiveThinking(modelID string) bool {
+	modelID = withoutSnapshotDate(modelID)
+	if anthropicFixedThinkingModels[modelID] {
+		return false
+	}
+	for _, family := range anthropicAdaptiveThinkingFamilies {
+		if strings.HasPrefix(modelID, family) {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutSnapshotDate drops a trailing -YYYYMMDD release stamp, if present.
+func withoutSnapshotDate(modelID string) string {
+	i := strings.LastIndex(modelID, "-")
+	if i < 0 {
+		return modelID
+	}
+	suffix := modelID[i+1:]
+	if len(suffix) != 8 {
+		return modelID
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return modelID
+		}
+	}
+	return modelID[:i]
 }
 
 var anthropicAdaptiveEfforts = map[string]bool{
@@ -51,7 +100,7 @@ func buildPromptRequestBody(content, model, opencodeMessageID, reasoningEffort s
 	if reasoningEffort != "" {
 		switch providerID {
 		case "anthropic", "google-vertex", "google-vertex-anthropic":
-			if anthropicAdaptiveThinkingModels[modelID] {
+			if usesAdaptiveThinking(modelID) {
 				opts := map[string]any{"thinking": map[string]any{"type": "adaptive"}}
 				if anthropicAdaptiveEfforts[reasoningEffort] {
 					opts["outputConfig"] = map[string]any{"effort": reasoningEffort}
@@ -67,6 +116,10 @@ func buildPromptRequestBody(content, model, opencodeMessageID, reasoningEffort s
 				"reasoningEffort":  reasoningEffort,
 				"reasoningSummary": "auto",
 			}
+		case "xai":
+			// Grok takes its reasoning effort as an OpenCode variant, which is a
+			// property of the request rather than of the model spec.
+			body["variant"] = reasoningEffort
 		}
 	}
 
@@ -90,6 +143,29 @@ func gmap(m map[string]any, key string) map[string]any {
 	}
 	mm, _ := m[key].(map[string]any)
 	return mm
+}
+
+// messageCreatedTime reads time.created (epoch ms) off an OpenCode message,
+// returning nil when it is absent or unusable. Non-finite values count as absent
+// rather than being converted, so a malformed payload cannot poison the ordering
+// the compaction fallback depends on.
+func messageCreatedTime(info map[string]any) *time.Time {
+	var ms int64
+	switch created := gmap(info, "time")["created"].(type) {
+	case float64:
+		if math.IsNaN(created) || math.IsInf(created, 0) {
+			return nil
+		}
+		ms = int64(created)
+	case int64:
+		ms = created
+	case int:
+		ms = int64(created)
+	default:
+		return nil
+	}
+	t := time.UnixMilli(ms)
+	return &t
 }
 
 // truthy mirrors Python truthiness for the values OpenCode sends (nil, empty

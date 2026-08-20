@@ -12,6 +12,10 @@ type SpawnChildRequest struct {
 	Title  string
 	Prompt string
 	Model  string // optional; defaults to the parent's model
+	// Reasoning overrides the child's reasoning effort. nil omits the field so
+	// the child inherits the parent's; a non-nil pointer is always sent, so ""
+	// reaches the control plane as an explicit value rather than an omission.
+	Reasoning *string
 }
 
 // SpawnChildResult identifies the spawned child session.
@@ -25,6 +29,9 @@ func (c *Client) SpawnChild(ctx context.Context, req SpawnChildRequest) (SpawnCh
 	payload := map[string]any{"title": req.Title, "prompt": req.Prompt}
 	if req.Model != "" {
 		payload["model"] = req.Model
+	}
+	if req.Reasoning != nil {
+		payload["reasoningEffort"] = *req.Reasoning
 	}
 	var out SpawnChildResult
 	if err := c.doJSON(ctx, "POST", "/children", payload, &out); err != nil {
@@ -52,6 +59,23 @@ func (c *Client) ListChildren(ctx context.Context) ([]ChildSummary, error) {
 	return out.Children, nil
 }
 
+// SendChildPromptResult identifies the queued follow-up message.
+type SendChildPromptResult struct {
+	MessageID string `json:"messageId"`
+}
+
+// SendChildPrompt queues a follow-up prompt in a child session
+// (POST /children/{id}/prompt). The control plane admits it behind whatever the
+// child is already doing rather than interrupting the active turn.
+func (c *Client) SendChildPrompt(ctx context.Context, childID, content string) (SendChildPromptResult, error) {
+	var out SendChildPromptResult
+	body := map[string]any{"content": content}
+	if err := c.doJSON(ctx, "POST", "/children/"+url.PathEscape(childID)+"/prompt", body, &out); err != nil {
+		return SendChildPromptResult{}, err
+	}
+	return out, nil
+}
+
 // ChildDetailOptions selects optional sections of a child detail response.
 type ChildDetailOptions struct {
 	IncludeResponse   bool
@@ -68,6 +92,9 @@ type ChildDetail struct {
 	FinalResponse *FinalResponse `json:"finalResponse"`
 	Trajectory    *Trajectory    `json:"trajectory"`
 	RecentEvents  []Event        `json:"recentEvents"`
+	// HasUnfinishedPrompt reports that a newer prompt is queued or running, so
+	// FinalResponse answers an earlier one.
+	HasUnfinishedPrompt bool `json:"hasUnfinishedPrompt"`
 }
 
 // ChildSession is the core session metadata in a child detail.
@@ -160,15 +187,27 @@ func childQuery(opts ChildDetailOptions) string {
 	return ""
 }
 
-// CancelResult is the outcome of cancelling a child.
+// CancelResult is the outcome of cancelling a child. CancelledDescendantIDs
+// lists the nested tasks the control plane cancelled along with it; a control
+// plane that predates cascading cancellation omits it.
 type CancelResult struct {
-	Status string `json:"status"`
+	Status                 string   `json:"status"`
+	CancelledDescendantIDs []string `json:"cancelledDescendantIds"`
 }
 
-// CancelChild cancels a running child (POST /children/{id}/cancel).
-func (c *Client) CancelChild(ctx context.Context, childID string) (CancelResult, error) {
+// cancelRequest asks the control plane to cascade the cancellation to the
+// child's own descendants.
+type cancelRequest struct {
+	CancelNested bool `json:"cancelNested"`
+}
+
+// CancelChild cancels a running child (POST /children/{id}/cancel). With
+// cancelNested the control plane also cancels the child's active descendants,
+// deepest-first.
+func (c *Client) CancelChild(ctx context.Context, childID string, cancelNested bool) (CancelResult, error) {
 	var out CancelResult
-	if err := c.doJSON(ctx, "POST", "/children/"+url.PathEscape(childID)+"/cancel", nil, &out); err != nil {
+	body := cancelRequest{CancelNested: cancelNested}
+	if err := c.doJSON(ctx, "POST", "/children/"+url.PathEscape(childID)+"/cancel", body, &out); err != nil {
 		return CancelResult{}, err
 	}
 	return out, nil

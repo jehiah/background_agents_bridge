@@ -26,7 +26,12 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
+	"github.com/jehiah/background_agents_bridge/internal/sessiondiff"
 )
+
+// diffRefreshShutdownTimeout bounds how long shutdown waits for an in-flight
+// session diff refresh, mirroring DIFF_REFRESH_SHUTDOWN_TIMEOUT_SECONDS.
+const diffRefreshShutdownTimeout = 5 * time.Second
 
 // errSessionTerminated is returned when the control plane has terminated the
 // session (HTTP 401/403/404/410). It is non-recoverable: the bridge exits
@@ -47,6 +52,10 @@ type AgentBridge struct {
 	httpClient           *http.Client
 	ids                  *identifier
 
+	// diffRefresh coalesces terminal prompts into one durable-diff-viewer
+	// refresh of the idle checkout.
+	diffRefresh *sessiondiff.Worker
+
 	sessionIDFile    string
 	workspacePath    string
 	repoManifestPath string
@@ -63,6 +72,13 @@ type AgentBridge struct {
 	opencodeSessionID         string
 	lastForwardedSessionTitle string
 
+	// Aggregate connection observability, also guarded by mu. connectedAt is
+	// zero whenever no connection is active.
+	connectedAt            time.Time
+	connectionCount        int
+	reconnectAttemptCount  int
+	totalConnectedDuration time.Duration
+
 	// promptMu guards the in-flight prompt's cancel func and generation.
 	promptMu      sync.Mutex
 	cancelPromptF context.CancelFunc
@@ -70,6 +86,11 @@ type AgentBridge struct {
 
 	gitSyncOnce  sync.Once
 	gitSyncDoneC chan struct{}
+
+	// signingMu serializes the global git config writes that carry commit
+	// attribution and signing, so two prompts cannot interleave halves of the
+	// configuration.
+	signingMu sync.Mutex
 }
 
 // New constructs an AgentBridge. log should already carry base attributes
@@ -97,6 +118,11 @@ func New(sandboxID, sessionID, controlPlaneURL, authToken string, opencodePort i
 	)
 	// No global client timeout: SSE streaming needs an unbounded read. Per-call
 	// timeouts are applied via context; the dialer keeps a connect timeout.
+	b.diffRefresh = sessiondiff.NewWorker(
+		sessiondiff.NewClient(controlPlaneURL, sessionID, authToken),
+		b.repoManifestPath,
+		log,
+	)
 	b.httpClient = &http.Client{
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{Timeout: httpConnectTimeout}).DialContext,
@@ -122,23 +148,55 @@ func (b *AgentBridge) Run(parent context.Context) error {
 
 	b.log.Info("bridge.run_start")
 	b.loadSessionID(ctx)
+	b.diffRefresh.Start(ctx)
+
+	// Install commit attribution and signing before the first prompt, so a
+	// commit made outside a prompt is still attributed and signed. A failure
+	// here is only a warning: the first prompt refreshes the configuration and
+	// reports the failure to the control plane if it persists.
+	if err := b.configureGitIdentity(ctx, nil, b.agentGitUser(ctx)); err != nil {
+		b.log.Warn("git.signing_init_failed", "exc", err)
+	}
+
+	// The terminal summary: how the run ended plus the lifetime aggregates.
+	// runOutcome is reset per iteration so a failure that a later reconnect
+	// recovers from does not survive into the summary.
+	runOutcome, runDetail := "shutdown", ""
+	defer func() {
+		args := append([]any{"outcome", runOutcome}, b.aggregateFields()...)
+		args = append(args, "total_connected_duration_seconds", roundSeconds(b.connectedDuration()))
+		if runDetail != "" {
+			args = append(args, "detail", runDetail)
+		}
+		b.log.Info("bridge.run_complete", args...)
+	}()
 
 	attempts := 0
 	for ctx.Err() == nil {
+		runOutcome, runDetail = "shutdown", ""
 		err := b.connectAndRun(ctx)
 		switch {
 		case err == nil:
+			if ctx.Err() == nil {
+				runOutcome = "connection_closed"
+			}
 			attempts = 0
 		case errors.Is(err, errSessionTerminated):
-			b.log.Info("bridge.disconnect", "reason", "session_terminated", "detail", err.Error())
+			// Non-recoverable: the control plane has terminated the session.
+			runOutcome, runDetail = "session_terminated", err.Error()
 			cancel()
 		case isFatalConnectionError(err):
-			b.log.Error("bridge.disconnect", "reason", "fatal_error", "exc", err)
+			runOutcome, runDetail = "fatal_error", err.Error()
 			cancel()
 		case ctx.Err() != nil:
 			// Shutting down; suppress the noisy close error.
+		case websocket.CloseStatus(err) != -1:
+			// The peer closed the socket; connectAndRun already logged the
+			// bridge.disconnect with the close code and the aggregates.
+			runOutcome = "connection_closed"
 		default:
-			b.log.Warn("bridge.disconnect", "reason", "connection_error", "detail", err.Error())
+			runOutcome, runDetail = "connection_error", err.Error()
+			b.log.Warn("bridge.connect_error", "detail", err.Error())
 		}
 
 		if ctx.Err() != nil {
@@ -146,8 +204,13 @@ func (b *AgentBridge) Run(parent context.Context) error {
 		}
 
 		attempts++
+		b.countReconnectAttempt()
 		delay := reconnectDelay(attempts)
-		b.log.Info("bridge.reconnect", "attempt", attempts, "delay_s", delay.Seconds())
+		b.log.Info("bridge.reconnect",
+			"attempt", attempts,
+			"reconnect_attempt_count", b.reconnectAttempts(),
+			"delay_s", delay.Seconds(),
+		)
 		select {
 		case <-ctx.Done():
 		case <-time.After(delay):
@@ -155,6 +218,9 @@ func (b *AgentBridge) Run(parent context.Context) error {
 	}
 
 	b.cancelPrompt()
+	// Give a refresh collected just before shutdown a bounded chance to land, so
+	// the viewer is not left showing the state from the previous prompt.
+	b.diffRefresh.Close(diffRefreshShutdownTimeout)
 	return nil
 }
 
@@ -178,6 +244,90 @@ func reconnectDelay(attempt int) time.Duration {
 		d = reconnectMaxDelay
 	}
 	return d
+}
+
+// --- connection observability ------------------------------------------------
+//
+// Aggregates for the whole run: how many times the bridge connected, how many
+// reconnect attempts it made (including ones that failed), and how long it was
+// actually connected. Port of the _mark_connected / _finalize_connection /
+// _log_disconnect trio in bridge.py (upstream #1017).
+
+// markConnected records the start of a connection.
+func (b *AgentBridge) markConnected() {
+	b.mu.Lock()
+	b.connectionCount++
+	b.connectedAt = time.Now()
+	b.mu.Unlock()
+}
+
+// countReconnectAttempt records that a reconnect is about to be attempted.
+func (b *AgentBridge) countReconnectAttempt() {
+	b.mu.Lock()
+	b.reconnectAttemptCount++
+	b.mu.Unlock()
+}
+
+func (b *AgentBridge) reconnectAttempts() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.reconnectAttemptCount
+}
+
+// aggregateFields returns the run-level connection counters as log attributes.
+func (b *AgentBridge) aggregateFields() []any {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return []any{
+		"connection_count", b.connectionCount,
+		"reconnect_count", max(0, b.connectionCount-1),
+		"reconnect_attempt_count", b.reconnectAttemptCount,
+	}
+}
+
+// connectedDuration is the total time spent connected so far.
+func (b *AgentBridge) connectedDuration() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.totalConnectedDuration
+}
+
+// finalizeConnection closes out the active connection and returns its log
+// attributes. ok is false when no connection is active — that is what keeps a
+// connection from being logged as disconnected twice.
+func (b *AgentBridge) finalizeConnection() ([]any, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.connectedAt.IsZero() {
+		return nil, false
+	}
+	duration := max(time.Since(b.connectedAt), 0)
+	b.connectedAt = time.Time{}
+	b.totalConnectedDuration += duration
+	return []any{
+		"connection_duration_seconds", roundSeconds(duration),
+		"total_connected_duration_seconds", roundSeconds(b.totalConnectedDuration),
+		"connection_count", b.connectionCount,
+		"reconnect_count", max(0, b.connectionCount-1),
+		"reconnect_attempt_count", b.reconnectAttemptCount,
+	}, true
+}
+
+// logDisconnect emits the single bridge.disconnect for the active connection,
+// or nothing if it was already logged.
+func (b *AgentBridge) logDisconnect(reason string, level slog.Level, extra ...any) {
+	fields, ok := b.finalizeConnection()
+	if !ok {
+		return
+	}
+	args := append([]any{"reason", reason}, fields...)
+	b.log.Log(context.Background(), level, "bridge.disconnect", append(args, extra...)...)
+}
+
+// roundSeconds renders a duration as seconds with millisecond precision, as the
+// Python bridge does with round(..., 3).
+func roundSeconds(d time.Duration) float64 {
+	return math.Round(d.Seconds()*1000) / 1000
 }
 
 // --- shared state accessors --------------------------------------------------

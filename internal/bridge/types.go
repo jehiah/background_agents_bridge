@@ -1,8 +1,12 @@
 package bridge
 
 import (
+	"encoding/json"
 	"maps"
+	"slices"
 	"time"
+
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
 
 // event is an outbound message to the control plane. It is modeled as a plain
@@ -19,7 +23,9 @@ type GitUser struct {
 }
 
 // fallbackGitUser matches the co-author trailer used in shared/git.ts when a
-// prompt author has no SCM name/email configured.
+// prompt author has no SCM name/email configured. It is the default only: a
+// deployment names its own bot with openinspect.name / openinspect.email in git
+// config (see agentGitUser).
 var fallbackGitUser = GitUser{Name: "OpenInspect", Email: "open-inspect@noreply.github.com"}
 
 // nowUnix returns the current time as fractional Unix seconds, matching
@@ -42,8 +48,28 @@ func nullable(s string) any {
 // None of these set sandboxId or timestamp; sendEvent stamps those (and ackId
 // for critical events) just before transmission, matching _send_event.
 
-func readyEvent(opencodeSessionID string) event {
-	return event{"type": "ready", "opencodeSessionId": nullable(opencodeSessionID)}
+// readyEvent announces the handshake. repositories tells the control plane
+// which checkouts have a session diff baseline (and what it is), so the viewer
+// knows what the sandbox will be diffing against; an entry without a baseline
+// is omitted rather than sent as null.
+func readyEvent(opencodeSessionID string, repositories []repomanifest.Entry) event {
+	entries := []any{}
+	for position, repository := range repositories {
+		if repository.BaseSHA == "" {
+			continue
+		}
+		entries = append(entries, map[string]any{
+			"position":  position,
+			"repoOwner": repository.Owner,
+			"repoName":  repository.Name,
+			"baseSha":   repository.BaseSHA,
+		})
+	}
+	return event{
+		"type":              "ready",
+		"opencodeSessionId": nullable(opencodeSessionID),
+		"repositories":      entries,
+	}
 }
 
 func heartbeatEvent(status string) event {
@@ -78,6 +104,12 @@ func stepFinishEvent(cost, tokens, reason any, messageID string) event {
 		"reason":    reason,
 		"messageId": messageID,
 	}
+}
+
+// contextCompactedEvent marks where OpenCode rebuilt the session context. It
+// gives the timeline something to show for the gap compaction leaves behind.
+func contextCompactedEvent(messageID string) event {
+	return event{"type": "context_compacted", "messageId": messageID}
 }
 
 func sessionTitleEvent(title string) event {
@@ -148,8 +180,56 @@ type command struct {
 }
 
 type commandAuthor struct {
-	SCMName  string `json:"scmName"`
-	SCMEmail string `json:"scmEmail"`
+	// GitIdentity is the control plane's explicit attribution mode. Older
+	// control planes omit it and send scmName/scmEmail instead.
+	GitIdentity *gitIdentity `json:"gitIdentity"`
+	SCMName     string       `json:"scmName"`
+	SCMEmail    string       `json:"scmEmail"`
+
+	// raw is the author object exactly as it arrived. Commits landing under the
+	// wrong identity are diagnosed from the outside — all the bridge can say on
+	// its own is "the control plane asked for agent-only" — so the payload that
+	// produced that decision is logged verbatim at debug level.
+	raw json.RawMessage
+}
+
+// authorFields is commandAuthor without its UnmarshalJSON method, so the shim
+// below can decode the whole field set without recursing into itself.
+type authorFields commandAuthor
+
+func (a *commandAuthor) UnmarshalJSON(data []byte) error {
+	var decoded authorFields
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*a = commandAuthor(decoded)
+	a.raw = slices.Clone(data)
+	return nil
+}
+
+// attributionMode names the shape the control plane sent, which is what
+// decides whether a commit carries a user's name. It is the log's answer to
+// "was this the control plane's choice or the bridge's fallback?".
+func (a commandAuthor) attributionMode() string {
+	switch {
+	case a.GitIdentity != nil && a.GitIdentity.Mode != "":
+		return a.GitIdentity.Mode
+	case a.GitIdentity != nil:
+		return "empty-mode"
+	case a.SCMName != "" || a.SCMEmail != "":
+		return "legacy-scm"
+	default:
+		return "absent"
+	}
+}
+
+// gitIdentity is the prompt's commit attribution: mode "agent-only" (no
+// user to attribute to) or "attributed-user" with the trusted GitHub
+// user's name and email.
+type gitIdentity struct {
+	Mode  string `json:"mode"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 type pushSpec struct {

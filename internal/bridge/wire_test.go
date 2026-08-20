@@ -2,7 +2,10 @@ package bridge
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/jehiah/background_agents_bridge/internal/repomanifest"
 )
 
 // marshalStable serializes an event after dropping non-deterministic fields so
@@ -27,8 +30,17 @@ func TestEventWireFormat(t *testing.T) {
 		ev   event
 		want string
 	}{
-		{"ready_unset", readyEvent(""), `{"opencodeSessionId":null,"type":"ready"}`},
-		{"ready_set", readyEvent("ses_x"), `{"opencodeSessionId":"ses_x","type":"ready"}`},
+		{"ready_unset", readyEvent("", nil), `{"opencodeSessionId":null,"repositories":[],"type":"ready"}`},
+		{"ready_set", readyEvent("ses_x", nil), `{"opencodeSessionId":"ses_x","repositories":[],"type":"ready"}`},
+		{
+			"ready_repositories",
+			readyEvent("ses_x", []repomanifest.Entry{
+				{Owner: "acme", Name: "web", BaseSHA: strings.Repeat("a", 40)},
+				{Owner: "acme", Name: "api"},
+			}),
+			`{"opencodeSessionId":"ses_x","repositories":[{"baseSha":"` + strings.Repeat("a", 40) +
+				`","position":0,"repoName":"web","repoOwner":"acme"}],"type":"ready"}`,
+		},
 		{"heartbeat", heartbeatEvent("ready"), `{"status":"ready","type":"heartbeat"}`},
 		{"token", tokenEvent("hi", "m1"), `{"content":"hi","messageId":"m1","type":"token"}`},
 		{
@@ -97,6 +109,23 @@ func TestCommandUnmarshal(t *testing.T) {
 	}
 	if cmd.Author.SCMName != "Jane" || cmd.Author.SCMEmail != "jane@example.com" {
 		t.Errorf("author: %+v", cmd.Author)
+	}
+	if cmd.Author.GitIdentity != nil {
+		t.Errorf("gitIdentity: %+v, want nil for a legacy author", cmd.Author.GitIdentity)
+	}
+}
+
+func TestCommandUnmarshalGitIdentity(t *testing.T) {
+	raw := `{"type":"prompt","messageId":"m1","content":"hello","author":{"gitIdentity":
+		{"mode":"attributed-user","name":"Jane","email":"jane@example.com"}}}`
+	var cmd command
+	if err := json.Unmarshal([]byte(raw), &cmd); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	identity := cmd.Author.GitIdentity
+	if identity == nil || identity.Mode != "attributed-user" ||
+		identity.Name != "Jane" || identity.Email != "jane@example.com" {
+		t.Errorf("gitIdentity: %+v", identity)
 	}
 }
 

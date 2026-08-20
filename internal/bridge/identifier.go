@@ -32,9 +32,12 @@ var idPrefixes = map[string]string{
 //     big-endian 48-bit integer
 //   - randomBase62: 14 random base62 characters
 //
-// IDs are monotonically increasing so a new user message always sorts after the
-// previous assistant message, which OpenCode's prompt loop relies on. Unlike the
-// Python original this generator is safe for concurrent use.
+// IDs increase monotonically only within a rollover window: the encoded value is
+// truncated to 48 bits, so it wraps roughly every 795 days and IDs minted after a
+// rollover sort BELOW every ID from the window before it. Never order messages by
+// comparing these IDs — order by their time.created instead.
+//
+// Unlike the Python original this generator is safe for concurrent use.
 type identifier struct {
 	mu            sync.Mutex
 	lastTimestamp int64

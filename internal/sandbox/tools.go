@@ -31,9 +31,10 @@ type toolImpl struct {
 // generated tool definitions (toolDefs in toolgen.go; enforced by a test).
 var toolImpls = map[string]toolImpl{
 	"create-pull-request": {run: runCreatePR},
-	"spawn-task":          {run: runSpawnTask},
-	"get-task-status":     {run: runGetTaskStatus},
-	"cancel-task":         {run: runCancelTask},
+	"spawn-child":         {run: runSpawnChild},
+	"get-child-status":    {run: runGetChildStatus},
+	"cancel-child":        {run: runCancelChild},
+	"send-child-prompt":   {run: runSendChildPrompt},
 	"slack-notify":        {run: runSlackNotify, clientErr: slackClientErr},
 	"image-upload":        {run: runImageUpload},
 }
@@ -184,7 +185,8 @@ func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]an
 			case http.StatusNotFound:
 				return fmt.Sprintf("Session not found: %s. The session may have been deleted or the ID is incorrect.", e.Display())
 			case http.StatusConflict:
-				return fmt.Sprintf("Conflict: %s. A PR may already exist for this branch.", e.Display())
+				return fmt.Sprintf("Conflict: %s. To open an additional pull request, create a new branch "+
+					"(`git checkout -b`), commit, and call this tool again.", e.Display())
 			}
 			return "Failed to create pull request: " + e.Display()
 		}
@@ -194,7 +196,29 @@ func runCreatePR(ctx context.Context, c *controlplane.Client, args map[string]an
 	if result.Manual() {
 		return fmt.Sprintf("Branch pushed successfully.\n\nCreate the pull request in GitHub:\n%s\n\nUse your logged-in GitHub account to finish creating the PR.", result.CreatePRURL)
 	}
-	return fmt.Sprintf("Pull request created successfully!\n\nPR #%d: %s\n\nThe PR is now ready for review.", result.PRNumber, result.PRURL)
+	return prSuccessMessage(result)
+}
+
+// prSuccessMessage reports the created (or reused) PR and its state. Repository
+// policy can force a draft even when the agent did not ask for one, so the state
+// has to come from the response rather than from the request. Calling the tool
+// again from the same branch updates that branch's open PR instead of opening a
+// new one, so the message has to say which of the two happened.
+func prSuccessMessage(result controlplane.PRResult) string {
+	branches := ""
+	if result.HeadBranch != "" && result.BaseBranch != "" {
+		branches = fmt.Sprintf(" (%s -> %s)", result.HeadBranch, result.BaseBranch)
+	}
+	if result.Updated {
+		return fmt.Sprintf("Pull request updated with your latest commits.\n\nPR #%d%s: %s",
+			result.PRNumber, branches, result.PRURL)
+	}
+	status := "The pull request is now ready for review."
+	if result.State == "draft" {
+		status = "The pull request is in draft mode."
+	}
+	return fmt.Sprintf("Pull request created successfully!\n\nPR #%d%s: %s\n\n%s",
+		result.PRNumber, branches, result.PRURL, status)
 }
 
 // requireFeatureBranch returns a non-empty, agent-facing error when head is not
@@ -292,54 +316,97 @@ func firstRepoDir() string {
 	return ""
 }
 
-// --- spawn-task --------------------------------------------------------------
+// --- spawn-child -------------------------------------------------------------
 
-func runSpawnTask(ctx context.Context, c *controlplane.Client, args map[string]any) string {
+func runSpawnChild(ctx context.Context, c *controlplane.Client, args map[string]any) string {
 	result, err := c.SpawnChild(ctx, controlplane.SpawnChildRequest{
-		Title:  argStr(args, "title"),
-		Prompt: argStr(args, "prompt"),
-		Model:  argStr(args, "model"),
+		Title:     argStr(args, "title"),
+		Prompt:    argStr(args, "prompt"),
+		Model:     argStr(args, "model"),
+		Reasoning: argStrPtr(args, "reasoning"),
 	})
 	if err != nil {
 		if e, ok := apiErr(err); ok {
 			switch e.StatusCode {
 			case http.StatusForbidden:
-				return fmt.Sprintf("Cannot spawn task: %s. This may be a depth limit or repository restriction.", e.Display())
+				return fmt.Sprintf("Cannot spawn child: %s. This may be a depth limit or repository restriction.", e.Display())
 			case http.StatusTooManyRequests:
-				return fmt.Sprintf("Rate limited: %s. Wait a moment before spawning another task.", e.Display())
+				return fmt.Sprintf("Rate limited: %s. Wait a moment before spawning another child.", e.Display())
 			}
-			return fmt.Sprintf("Failed to spawn task: %s (HTTP %d)", e.Display(), e.StatusCode)
+			return fmt.Sprintf("Failed to spawn child: %s (HTTP %d)", e.Display(), e.StatusCode)
 		}
-		return "Failed to spawn task: " + err.Error()
+		return "Failed to spawn child: " + err.Error()
 	}
 
 	return strings.Join([]string{
-		"Task spawned successfully.",
+		"Child spawned successfully.",
 		"",
-		"  Task ID: " + result.SessionID,
+		"  Child ID: " + result.SessionID,
 		"  Status:  PENDING",
 		"",
-		"Use get-task-status with this task ID to check progress.",
+		"The child will continue independently. Check status only when you need its result; do not poll repeatedly.",
 	}, "\n")
 }
 
-// --- cancel-task -------------------------------------------------------------
+// --- send-child-prompt -------------------------------------------------------
 
-func runCancelTask(ctx context.Context, c *controlplane.Client, args map[string]any) string {
-	taskID := argStr(args, "taskId")
-	result, err := c.CancelChild(ctx, taskID)
+// runSendChildPrompt queues a follow-up prompt in a direct child session. The
+// control plane admits it behind the child's current work, so the tool reports
+// that the prompt is queued rather than answered.
+func runSendChildPrompt(ctx context.Context, c *controlplane.Client, args map[string]any) string {
+	childID := argStr(args, "childId")
+	result, err := c.SendChildPrompt(ctx, childID, argStr(args, "prompt"))
 	if err != nil {
 		if e, ok := apiErr(err); ok {
 			switch e.StatusCode {
 			case http.StatusNotFound:
-				return fmt.Sprintf("Task %q not found. Use get-task-status to list available tasks.", taskID)
+				return fmt.Sprintf("Child %q not found. Use get-child-status to list direct children.", childID)
+			case http.StatusConflict:
+				// The child is in a state it cannot resume from (cancelled or
+				// archived), not merely busy.
+				return fmt.Sprintf("Cannot prompt child %q: %s", childID, e.Display())
+			case http.StatusTooManyRequests:
+				return fmt.Sprintf("Cannot queue another prompt for child %q: %s", childID, e.Display())
+			}
+			return fmt.Sprintf("Failed to prompt child: %s (HTTP %d)", e.Display(), e.StatusCode)
+		}
+		return "Failed to prompt child: " + err.Error()
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("Follow-up durably queued for child %q.", childID),
+		"Message ID: " + result.MessageID,
+		"The prompt will run after any current child work. Use get-child-status when you need the result.",
+	}, "\n")
+}
+
+// --- cancel-child ------------------------------------------------------------
+
+func runCancelChild(ctx context.Context, c *controlplane.Client, args map[string]any) string {
+	childID := argStr(args, "childId")
+	// Cascading is the default: a cancelled child whose own children keep running
+	// leaves orphaned sandboxes behind. The tool schema defaults it too, so the
+	// arg is normally present; this covers a direct `bridge tool` invocation.
+	cancelNested := true
+	if v := argBoolPtr(args, "cancelNested"); v != nil {
+		cancelNested = *v
+	}
+	result, err := c.CancelChild(ctx, childID, cancelNested)
+	if err != nil {
+		if e, ok := apiErr(err); ok {
+			switch e.StatusCode {
+			case http.StatusNotFound:
+				return fmt.Sprintf("Child %q not found. Use get-child-status to list available children.", childID)
 			case http.StatusConflict:
 				return "Cannot cancel: " + e.Display()
 			}
-			return fmt.Sprintf("Failed to cancel task: %s (HTTP %d)", e.Display(), e.StatusCode)
+			return fmt.Sprintf("Failed to cancel child: %s (HTTP %d)", e.Display(), e.StatusCode)
 		}
-		return "Failed to cancel task: " + err.Error()
+		return "Failed to cancel child: " + err.Error()
 	}
 	status := orDefault(result.Status, "cancelled")
-	return fmt.Sprintf("Task %q cancelled successfully. Status: %s", taskID, strings.ToUpper(status))
+	nested := ""
+	if n := len(result.CancelledDescendantIDs); n > 0 {
+		nested = fmt.Sprintf(" Also cancelled %d nested child session(s).", n)
+	}
+	return fmt.Sprintf("Child %q cancelled successfully.%s Status: %s", childID, nested, strings.ToUpper(status))
 }
